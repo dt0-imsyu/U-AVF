@@ -1,0 +1,264 @@
+#!/bin/sh
+# /run is moved into the live root by initramfs-tools.  A transient socket
+# unit therefore lets Ubuntu's own systemd create the AF_VSOCK listener after
+# switch_root, avoiding a custom bare-metal ELF in the early userspace.
+set -eu
+# The bridge reads the X11 root window.  On a Wayland session that root can
+# remain black while Mutter renders the real desktop elsewhere.  Prefer an
+# Xorg GDM session for this disposable frame-capture experiment only.
+gdm_conf="${rootmnt:-/root}/etc/gdm3/custom.conf"
+if [ -f "$gdm_conf" ] && grep -q '^\[daemon\]' "$gdm_conf"; then
+  if grep -Eq '^[#[:space:]]*WaylandEnable=' "$gdm_conf"; then
+    sed -i 's/^[#[:space:]]*WaylandEnable=.*/WaylandEnable=false/' "$gdm_conf"
+  else
+    sed -i '/^\[daemon\]/a WaylandEnable=false' "$gdm_conf"
+  fi
+  if grep -q '^WaylandEnable=false$' "$gdm_conf"; then
+    echo 'LV:GDM_XORG=CONFIGURED' >/dev/console
+  else
+    echo 'LV:GDM_XORG=WRITE_FAILED' >/dev/console
+  fi
+else
+  echo 'LV:GDM_XORG=CONFIG_NOT_FOUND' >/dev/console
+fi
+mkdir -p /run/systemd/system/sockets.target.wants
+cat > /run/systemd/system/winavf-vsock.socket <<'EOF'
+[Unit]
+Description=WinAVF public vsock probe socket
+
+[Socket]
+ListenStream=vsock::4051
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+cat > /run/systemd/system/winavf-vsock@.service <<'EOF'
+[Unit]
+Description=WinAVF public vsock probe connection
+
+[Service]
+StandardInput=socket
+StandardOutput=socket
+ExecStart=/bin/sh -c 'printf "LVH1\001\000\000\000\000\000\000\000\001\000\000\000"'
+EOF
+ln -sf ../winavf-vsock.socket /run/systemd/system/sockets.target.wants/winavf-vsock.socket
+
+if [ -x /usr/local/sbin/winavf-audio-bridge ] \
+    && [ -x /usr/local/sbin/winavf-pactl ] \
+    && [ -x /usr/local/sbin/winavf-parec ]; then
+  rootfs="${rootmnt:-/root}"
+  mkdir -p "$rootfs/usr/local/lib/uavf-installer"
+  cp /usr/local/sbin/winavf-audio-bridge \
+    "$rootfs/usr/local/lib/uavf-installer/winavf-audio-bridge.py"
+  cp /usr/local/sbin/winavf-pactl \
+    "$rootfs/usr/local/lib/uavf-installer/winavf-pactl"
+  cp /usr/local/sbin/winavf-parec \
+    "$rootfs/usr/local/lib/uavf-installer/winavf-parec"
+  chmod 0755 "$rootfs/usr/local/lib/uavf-installer/winavf-audio-bridge.py" \
+    "$rootfs/usr/local/lib/uavf-installer/winavf-pactl" \
+    "$rootfs/usr/local/lib/uavf-installer/winavf-parec"
+  mkdir -p "$rootfs/usr/bin"
+  for tool in pactl parec; do
+    if [ ! -x "/usr/local/sbin/winavf-$tool" ]; then
+      echo "LV:AUDIO_TOOL_${tool}=MISSING" >/dev/console
+      continue
+    fi
+    cp "/usr/local/sbin/winavf-$tool" "$rootfs/usr/bin/$tool"
+    chmod 0755 "$rootfs/usr/bin/$tool"
+  done
+  cp /usr/local/sbin/winavf-audio-bridge /run/winavf-audio-bridge.py
+  chmod 0755 /run/winavf-audio-bridge.py
+  for tool in pactl parec; do
+    if [ -x "/usr/local/sbin/winavf-$tool" ]; then
+      cp "/usr/local/sbin/winavf-$tool" "/run/winavf-$tool"
+      chmod 0755 "/run/winavf-$tool"
+    fi
+  done
+  cat > /run/systemd/system/winavf-audio.socket <<'EOF'
+[Unit]
+Description=WinAVF guest audio PCM stream
+
+[Socket]
+ListenStream=vsock::4053
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+  cat > /run/systemd/system/winavf-audio@.service <<'EOF'
+[Unit]
+Description=WinAVF guest audio PCM connection
+After=graphical.target
+
+[Service]
+User=ubuntu
+Environment=HOME=/home/ubuntu
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal+console
+ExecStart=/usr/bin/python3 /run/winavf-audio-bridge.py
+EOF
+  ln -sf ../winavf-audio.socket /run/systemd/system/sockets.target.wants/winavf-audio.socket
+  : > /run/uavf-audio-payload-ready
+  echo 'LV:AUDIO_BRIDGE=READY' >/dev/console
+else
+  echo 'LV:AUDIO_BRIDGE=INCOMPLETE_PAYLOAD' >/dev/console
+fi
+
+cat > /run/systemd/system/winavf-frame.socket <<'EOF'
+[Unit]
+Description=WinAVF Ubuntu userspace frame bridge
+
+[Socket]
+ListenStream=vsock::4052
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+cat > /run/systemd/system/winavf-frame@.service <<'EOF'
+[Unit]
+Description=WinAVF Ubuntu userspace frame capture
+
+[Service]
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal+console
+ExecStart=/usr/bin/python3 /run/winavf-frame-bridge.py
+EOF
+if [ -f /run/winavf-frame-bridge.py ]; then
+  echo 'LV:FRAME_BRIDGE_SOURCE=INITRD_EARLY_COPY' >/dev/console
+elif [ -f /usr/local/sbin/winavf-frame-bridge ]; then
+  cp /usr/local/sbin/winavf-frame-bridge /run/winavf-frame-bridge.py
+  chmod 0755 /run/winavf-frame-bridge.py
+  echo 'LV:FRAME_BRIDGE_SOURCE=LEGACY_FALLBACK' >/dev/console
+fi
+if [ -x /run/winavf-frame-bridge.py ]; then
+  ln -sf ../winavf-frame.socket /run/systemd/system/sockets.target.wants/winavf-frame.socket
+  echo 'LV:FRAME_COPY=YES' >/dev/console
+else
+  echo 'LV:FRAME_COPY=NO' >/dev/console
+fi
+if [ -s /usr/local/sbin/uavf-control.py ] \
+    && [ -s /usr/local/sbin/uavf-control.socket ] \
+    && [ -s /usr/local/sbin/uavf-control@.service ]; then
+  rootfs="${rootmnt:-/root}"
+  mkdir -p "$rootfs/usr/local/sbin" \
+    "$rootfs/etc/systemd/system/sockets.target.wants"
+  cp /usr/local/sbin/uavf-control.py "$rootfs/usr/local/sbin/uavf-control.py"
+  for name in uavf-control.socket uavf-control@.service; do
+    cp "/usr/local/sbin/$name" "$rootfs/usr/local/sbin/$name"
+    cp "/usr/local/sbin/$name" "$rootfs/etc/systemd/system/$name"
+  done
+  chmod 0755 "$rootfs/usr/local/sbin/uavf-control.py"
+  ln -sf ../uavf-control.socket "$rootfs/etc/systemd/system/sockets.target.wants/uavf-control.socket"
+  echo 'LV:GUEST_CONTROL_PAYLOAD=READY PORT=4056 VERSION=1' >/dev/console
+fi
+# Keep the independent clipboard agent in the durable Live root, not only
+# inside initramfs. The install late-command reads these exact paths.
+rootfs="${rootmnt:-/root}"
+clipboard_ready=true
+for name in uavf-clipboard.py uavf-clipboard.socket uavf-clipboard@.service; do
+  [ -s "/usr/local/sbin/$name" ] || clipboard_ready=false
+done
+if [ "$clipboard_ready" = true ]; then
+  mkdir -p "$rootfs/usr/local/sbin" "$rootfs/etc/systemd/system/sockets.target.wants"
+  for name in uavf-clipboard.py uavf-clipboard.socket uavf-clipboard@.service; do
+    cp "/usr/local/sbin/$name" "$rootfs/usr/local/sbin/$name"
+  done
+  chmod 0755 "$rootfs/usr/local/sbin/uavf-clipboard.py"
+  for name in uavf-clipboard.socket uavf-clipboard@.service; do
+    cp "/usr/local/sbin/$name" "$rootfs/etc/systemd/system/$name"
+    chmod 0644 "$rootfs/etc/systemd/system/$name"
+  done
+  ln -sf ../uavf-clipboard.socket "$rootfs/etc/systemd/system/sockets.target.wants/uavf-clipboard.socket"
+  echo 'LV:CLIPBOARD_LIVE_ROOT=READY PORT=4054' >/dev/console
+else
+  echo 'LV:CLIPBOARD_LIVE_ROOT=PAYLOAD_MISSING' >/dev/console
+fi
+if [ -x /usr/local/sbin/uavf-install-runtime.sh ]; then
+  rootfs="${rootmnt:-/root}"
+  mkdir -p "$rootfs/usr/local/sbin"
+  cp /usr/local/sbin/uavf-install-runtime.sh "$rootfs/usr/local/sbin/uavf-install-runtime.sh"
+  chmod 0755 "$rootfs/usr/local/sbin/uavf-install-runtime.sh"
+  if [ -x /usr/local/sbin/uavf-install-preflight.sh ] \
+      && [ -s /usr/local/sbin/uavf-autoinstall.yaml ]; then
+    cp /usr/local/sbin/uavf-install-preflight.sh "$rootfs/usr/local/sbin/uavf-install-preflight.sh"
+    cp /usr/local/sbin/uavf-autoinstall.yaml "$rootfs/autoinstall.yaml"
+    chmod 0755 "$rootfs/usr/local/sbin/uavf-install-preflight.sh"
+    chmod 0644 "$rootfs/autoinstall.yaml"
+    echo 'LV:AUTOINSTALL_CONFIG=READY' >/dev/console
+    echo 'LV:INSTALL_RUNTIME_TRIGGER=LATE_COMMAND_ONLY' >/dev/console
+  else
+    echo 'LV:AUTOINSTALL_CONFIG=PAYLOAD_MISSING' >/dev/console
+  fi
+else
+  echo 'LV:AUTOINSTALL_BOOTSTRAP=RUNTIME_PAYLOAD_MISSING' >/dev/console
+fi
+if [ -f /usr/local/sbin/winavf-Xtigervnc ]; then
+  xvnc_target="${rootmnt:-/root}/usr/local/sbin/winavf-Xtigervnc"
+  mkdir -p "${rootmnt:-/root}/usr/local/sbin"
+  cp /usr/local/sbin/winavf-Xtigervnc "$xvnc_target"
+  chmod 0755 "$xvnc_target"
+  echo 'LV:XVNC_ROOT_COPY=YES' >/dev/console
+else
+  echo 'LV:XVNC_ROOT_COPY=NO' >/dev/console
+fi
+if [ -x /usr/local/sbin/winavf-virgl-gbm-mode ]; then
+  marker_target="${rootmnt:-/root}/usr/local/sbin/winavf-virgl-gbm-mode"
+  cp /usr/local/sbin/winavf-virgl-gbm-mode "$marker_target"
+  chmod 0755 "$marker_target"
+  echo 'LV:VIRGL_GBM_MARKER_COPY=YES' >/dev/console
+fi
+if [ -x /usr/local/sbin/winavf-X0tigervnc ] && [ -s /usr/local/sbin/uavf-gdm-display-share.py ]; then
+  rootfs="${rootmnt:-/root}"
+  cp /usr/local/sbin/winavf-X0tigervnc "$rootfs/usr/local/sbin/winavf-X0tigervnc"
+  cp /usr/local/sbin/uavf-gdm-display-share.py /run/uavf-gdm-display-share.py
+  mkdir -p "$rootfs/usr/local/share/uavf-licenses"
+  cp /usr/local/share/uavf-licenses/TIGERVNC_X0_COPYRIGHT "$rootfs/usr/local/share/uavf-licenses/TIGERVNC_X0_COPYRIGHT"
+  chmod 0755 "$rootfs/usr/local/sbin/winavf-X0tigervnc"
+  mkdir -p /run/systemd/system/graphical.target.wants
+  cat > /run/systemd/system/winavf-xvnc.service <<'EOF'
+[Unit]
+Description=U-AVF existing GDM Xorg display share
+After=display-manager.service
+
+[Service]
+Type=simple
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=on-failure
+RestartSec=3
+ExecStart=/usr/bin/python3 /run/uavf-gdm-display-share.py
+
+[Install]
+WantedBy=graphical.target
+EOF
+  ln -sf ../winavf-xvnc.service \
+    /run/systemd/system/graphical.target.wants/winavf-xvnc.service
+  echo 'LV:SCRAPER_UNIT=CONFIGURED' >/dev/console
+  echo 'LV:DISPLAY_SOURCE=EXISTING_GDM_XORG' >/dev/console
+else
+  echo 'LV:SCRAPER_PAYLOAD_MISSING' >/dev/console
+fi
+echo 'LV:UNIT' >/dev/console
+
+# Additive production encoder; the stock ISO and original raw fallback remain.
+if [ -s /usr/local/sbin/stage-uavf-encoded-runtime.sh ]; then
+  rootfs="${rootmnt:-/root}"
+  if sh /usr/local/sbin/stage-uavf-encoded-runtime.sh /usr/local/sbin "$rootfs"; then
+    cp /usr/local/sbin/stage-uavf-encoded-runtime.sh "$rootfs/usr/local/sbin/"
+    # Preserve the payload for the install late-command, independent of /run.
+    mkdir -p "$rootfs/usr/local/lib/uavf-encoded-payload"
+    for name in uavf-encoded-display.py uavf-encoded-capture.py uavf-encoded.socket uavf-encoded@.service libgstx264.so libx264.so.164 GST_X264_COPYRIGHT X264_COPYRIGHT stage-uavf-safe-jit.sh uavf-safe-jit.py; do
+      cp "/usr/local/sbin/$name" "$rootfs/usr/local/lib/uavf-encoded-payload/"
+    done
+    cp "$rootfs/usr/local/lib/uavf-encoded/winavf-frame-bridge.py" "$rootfs/usr/local/lib/uavf-encoded-payload/"
+    echo 'LV:ENCODED_RUNTIME=STAGED PORT=4055' >/dev/console
+  else
+    echo 'LV:ENCODED_RUNTIME=UNAVAILABLE RAW_FALLBACK=RETAINED' >/dev/console
+  fi
+fi

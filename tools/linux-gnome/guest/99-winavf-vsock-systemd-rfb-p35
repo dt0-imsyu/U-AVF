@@ -1,0 +1,188 @@
+#!/bin/sh
+# /run is moved into the live root by initramfs-tools.  A transient socket
+# unit therefore lets Ubuntu's own systemd create the AF_VSOCK listener after
+# switch_root, avoiding a custom bare-metal ELF in the early userspace.
+set -eu
+# The bridge reads the X11 root window.  On a Wayland session that root can
+# remain black while Mutter renders the real desktop elsewhere.  Prefer an
+# Xorg GDM session for this disposable frame-capture experiment only.
+gdm_conf="${rootmnt:-/root}/etc/gdm3/custom.conf"
+if [ -f "$gdm_conf" ] && grep -q '^\[daemon\]' "$gdm_conf"; then
+  if grep -Eq '^[#[:space:]]*WaylandEnable=' "$gdm_conf"; then
+    sed -i 's/^[#[:space:]]*WaylandEnable=.*/WaylandEnable=false/' "$gdm_conf"
+  else
+    sed -i '/^\[daemon\]/a WaylandEnable=false' "$gdm_conf"
+  fi
+  if grep -q '^WaylandEnable=false$' "$gdm_conf"; then
+    echo 'LV:GDM_XORG=CONFIGURED' >/dev/console
+  else
+    echo 'LV:GDM_XORG=WRITE_FAILED' >/dev/console
+  fi
+else
+  echo 'LV:GDM_XORG=CONFIG_NOT_FOUND' >/dev/console
+fi
+mkdir -p /run/systemd/system/sockets.target.wants
+cat > /run/systemd/system/winavf-vsock.socket <<'EOF'
+[Unit]
+Description=WinAVF public vsock probe socket
+
+[Socket]
+ListenStream=vsock::4051
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+cat > /run/systemd/system/winavf-vsock@.service <<'EOF'
+[Unit]
+Description=WinAVF public vsock probe connection
+
+[Service]
+StandardInput=socket
+StandardOutput=socket
+ExecStart=/bin/sh -c 'printf "LVH1\001\000\000\000\000\000\000\000\001\000\000\000"'
+EOF
+ln -sf ../winavf-vsock.socket /run/systemd/system/sockets.target.wants/winavf-vsock.socket
+
+cat > /run/systemd/system/winavf-frame.socket <<'EOF'
+[Unit]
+Description=WinAVF Ubuntu userspace frame bridge
+
+[Socket]
+ListenStream=vsock::4052
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+cat > /run/systemd/system/winavf-frame@.service <<'EOF'
+[Unit]
+Description=WinAVF Ubuntu userspace frame capture
+
+[Service]
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal+console
+ExecStart=/usr/bin/python3 /run/winavf-frame-bridge.py
+EOF
+if [ -f /usr/local/sbin/winavf-frame-bridge ]; then
+  cp /usr/local/sbin/winavf-frame-bridge /run/winavf-frame-bridge.py
+  chmod 0755 /run/winavf-frame-bridge.py
+fi
+if [ -x /run/winavf-frame-bridge.py ]; then
+  ln -sf ../winavf-frame.socket /run/systemd/system/sockets.target.wants/winavf-frame.socket
+  echo 'LV:FRAME_COPY=YES' >/dev/console
+else
+  echo 'LV:FRAME_COPY=NO' >/dev/console
+fi
+if [ -f /usr/local/sbin/winavf-Xtigervnc ]; then
+  xvnc_target="${rootmnt:-/root}/usr/local/sbin/winavf-Xtigervnc"
+  mkdir -p "${rootmnt:-/root}/usr/local/sbin"
+  cp /usr/local/sbin/winavf-Xtigervnc "$xvnc_target"
+  chmod 0755 "$xvnc_target"
+  echo 'LV:XVNC_ROOT_COPY=YES' >/dev/console
+else
+  echo 'LV:XVNC_ROOT_COPY=NO' >/dev/console
+fi
+if [ -x "${rootmnt:-/root}/usr/local/sbin/winavf-Xtigervnc" ]; then
+  cat > /run/winavf-xvnc-session.sh <<'EOF'
+#!/bin/sh
+set -eu
+echo 'LV:XVNC_START' >&2
+i=0
+while [ ! -d /run/user/1000 ] && [ "$i" -lt 30 ]; do
+  i=$((i + 1))
+  sleep 1
+done
+if [ ! -d /run/user/1000 ]; then
+  echo 'LV:USER_RUNTIME=FAIL' >&2
+  exit 1
+fi
+export XDG_RUNTIME_DIR=/run/user/1000
+echo 'LV:USER_RUNTIME=PASS' >&2
+export DISPLAY=:1 XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe
+echo 'LV:SOFTPIPE=ENABLED' >&2
+/usr/local/sbin/winavf-Xtigervnc :1 -geometry 1920x1080 -depth 24 -rfbport 5901 -localhost -nolisten tcp -ac -SecurityTypes None &
+xvnc_pid=$!
+trap 'kill "$xvnc_pid" 2>/dev/null || true' EXIT
+i=0
+while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 30 ]; do
+  i=$((i + 1))
+  sleep 1
+done
+if [ ! -S /tmp/.X11-unix/X1 ]; then
+  echo 'LV:XVNC_SOCKET=FAIL' >&2
+  exit 1
+fi
+echo 'LV:XVNC_SOCKET=PASS' >&2
+dbus-run-session -- gnome-session --session=ubuntu &
+session_pid=$!
+sleep 55
+echo 'LV:GNOME_JOURNAL_BEGIN' >&2
+journalctl -b _UID=1000 --no-pager -n 120 -o short-monotonic >&2 || true
+echo 'LV:GNOME_JOURNAL_END' >&2
+echo 'LV:GNOME_CRASH_SUMMARY_BEGIN' >&2
+python3 - <<'PY' >&2 || true
+import glob
+import os
+
+paths = glob.glob('/var/crash/*gnome*')
+print('CRASH_FILES=%d' % len(paths), flush=True)
+wanted = {'Signal', 'ExecutablePath', 'ProcCmdline', 'StacktraceTop',
+          'Stacktrace', 'Registers', 'Title', 'ProblemType', 'Architecture'}
+for path in paths[:3]:
+    print('CRASH_FILE=%s BYTES=%d' % (path, os.stat(path).st_size), flush=True)
+    field = None
+    emitted = 0
+    with open(path, 'rb') as source:
+        for line in source:
+            if line and line[0] not in b' \t':
+                field = line.split(b':', 1)[0].decode('ascii', 'replace')
+                emitted = 0
+            if field in wanted and emitted < 32:
+                print(line[:240].decode('utf-8', 'replace').rstrip(), flush=True)
+                emitted += 1
+PY
+echo 'LV:GNOME_CRASH_SUMMARY_END' >&2
+for crash_report in /var/crash/_usr_bin_gnome-shell*.crash; do
+  [ -f "$crash_report" ] || continue
+  echo 'LV:GNOME_GDB_BEGIN' >&2
+  df -h /home/ubuntu >&2 || true
+  crash_dir=/home/ubuntu/winavf-gnome-core
+  if apport-unpack "$crash_report" "$crash_dir" >&2 && [ -f "$crash_dir/CoreDump" ]; then
+    ls -lh "$crash_dir/CoreDump" >&2
+    timeout 70 gdb -q -nx -batch \
+      -ex 'set pagination off' -ex 'info registers' \
+      -ex 'x/8i $pc-16' -ex 'bt 20' \
+      /usr/bin/gnome-shell "$crash_dir/CoreDump" 2>&1 | head -n 150 >&2 || true
+  else
+    echo 'LV:GNOME_CORE_UNAVAILABLE' >&2
+  fi
+  echo 'LV:GNOME_GDB_END' >&2
+  break
+done
+wait "$session_pid"
+EOF
+  chmod 0755 /run/winavf-xvnc-session.sh
+  mkdir -p /run/systemd/system/graphical.target.wants
+  cat > /run/systemd/system/winavf-xvnc.service <<'EOF'
+[Unit]
+Description=WinAVF isolated software GNOME display
+After=display-manager.service
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=HOME=/home/ubuntu
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStartPre=+/bin/sh -c 'echo LV:XVNC_PRE >/dev/console'
+ExecStart=/bin/sh /run/winavf-xvnc-session.sh
+
+[Install]
+WantedBy=graphical.target
+EOF
+  ln -sf ../winavf-xvnc.service /run/systemd/system/graphical.target.wants/winavf-xvnc.service
+  echo 'LV:XVNC_UNIT=CONFIGURED' >/dev/console
+fi
+echo 'LV:UNIT' >/dev/console

@@ -17,16 +17,23 @@ No automatic retry queue: an error is shown and Share report permits a retry.
 - Server timestamp and exact bounded field/schema validation.
 - ABI/API, permissions, storage and checksum probe outcomes are separate from
   boot/vsock/actual-renderer evidence. Missing evidence remains `not_tested`.
-- Never upload serial/logcat, identifiers, credentials, file names/paths,
+- Never upload serial/logcat, hardware serial numbers, credentials, file names/paths,
   clipboard, screenshots or guest contents.
 - Disabled consent means no authentication or upload. Permission changes must
   take effect before a new upload. This is not Firebase Analytics.
 
 Anonymous Auth is pseudonymous, not absolute anonymity. The service sees network
 metadata. 32 reports per UID is a bound, not a defence against new UID creation.
-Before public release: App Check / signed APK validation, retention policy,
-privacy notice and ingestion abuse testing. Client reports are untrusted claims,
+Known hardening limits: App Check / signed APK validation and automatic retention
+are not implemented. Privacy notice describes the actual optional cloud flow.
+Client reports are untrusted claims,
 not authoritative device certifications or a remotely controlled launch policy.
 
 Keep admin/service-account credentials OUT of the APK and repository. The client
 uses a Firebase public client API key plus its own short-lived Auth token.
+
+Live release validation2026-10-04: anonymous sign-in and one marked synthetic
+report accepted. Unauthenticated create, reads, update/delete, another-owner
+create, consent=false, extra fields, oversized values and run32 all rejected
+with403. Two test identities removed; one synthetic report retained. This does
+not certify protection against bulk creation of fresh anonymous identities.

@@ -1,0 +1,258 @@
+#!/bin/sh
+# /run is moved into the live root by initramfs-tools.  A transient socket
+# unit therefore lets Ubuntu's own systemd create the AF_VSOCK listener after
+# switch_root, avoiding a custom bare-metal ELF in the early userspace.
+set -eu
+# Install only the Linux ARM64 Gfxstream Vulkan ICD and its Noble-compatible
+# libdrm ABI into casper's writable root. The stock ISO remains untouched.
+gfxstream_source="/usr/local/lib/uavf-gfxstream"
+gfxstream_root="${rootmnt:-/root}"
+if [ -f "$gfxstream_source/libvulkan_gfxstream.so" ] && [ -f "$gfxstream_source/gfxstream_vk_icd.json" ] && [ -f "$gfxstream_source/libdrm.so.2.125.0" ]; then
+  mkdir -p "$gfxstream_root/usr/lib/aarch64-linux-gnu" "$gfxstream_root/usr/share/vulkan/icd.d"
+  cp "$gfxstream_source/libvulkan_gfxstream.so" "$gfxstream_root/usr/lib/aarch64-linux-gnu/libvulkan_gfxstream.so"
+  cp "$gfxstream_source/gfxstream_vk_icd.json" "$gfxstream_root/usr/share/vulkan/icd.d/gfxstream_vk_icd.json"
+  cp "$gfxstream_source/libdrm.so.2.125.0" "$gfxstream_root/usr/lib/aarch64-linux-gnu/libdrm.so.2.125.0"
+  ln -sfn libdrm.so.2.125.0 "$gfxstream_root/usr/lib/aarch64-linux-gnu/libdrm.so.2"
+  echo 'LV:GFXSTREAM_GUEST_ICD=INSTALLED' >/dev/console
+else
+  echo 'LV:GFXSTREAM_GUEST_ICD=NOT_PRESENT' >/dev/console
+fi
+# The bridge reads the X11 root window.  On a Wayland session that root can
+# remain black while Mutter renders the real desktop elsewhere.  Prefer an
+# Xorg GDM session for this disposable frame-capture experiment only.
+gdm_conf="${rootmnt:-/root}/etc/gdm3/custom.conf"
+if [ -f "$gdm_conf" ] && grep -q '^\[daemon\]' "$gdm_conf"; then
+  if grep -Eq '^[#[:space:]]*WaylandEnable=' "$gdm_conf"; then
+    sed -i 's/^[#[:space:]]*WaylandEnable=.*/WaylandEnable=false/' "$gdm_conf"
+  else
+    sed -i '/^\[daemon\]/a WaylandEnable=false' "$gdm_conf"
+  fi
+  if grep -q '^WaylandEnable=false$' "$gdm_conf"; then
+    echo 'LV:GDM_XORG=CONFIGURED' >/dev/console
+  else
+    echo 'LV:GDM_XORG=WRITE_FAILED' >/dev/console
+  fi
+else
+  echo 'LV:GDM_XORG=CONFIG_NOT_FOUND' >/dev/console
+fi
+mkdir -p /run/systemd/system/sockets.target.wants
+cat > /run/systemd/system/winavf-vsock.socket <<'EOF'
+[Unit]
+Description=WinAVF public vsock probe socket
+
+[Socket]
+ListenStream=vsock::4051
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+cat > /run/systemd/system/winavf-vsock@.service <<'EOF'
+[Unit]
+Description=WinAVF public vsock probe connection
+
+[Service]
+StandardInput=socket
+StandardOutput=socket
+ExecStart=/bin/sh -c 'printf "LVH1\001\000\000\000\000\000\000\000\001\000\000\000"'
+EOF
+ln -sf ../winavf-vsock.socket /run/systemd/system/sockets.target.wants/winavf-vsock.socket
+
+cat > /run/systemd/system/winavf-frame.socket <<'EOF'
+[Unit]
+Description=WinAVF Ubuntu userspace frame bridge
+
+[Socket]
+ListenStream=vsock::4052
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+cat > /run/systemd/system/winavf-frame@.service <<'EOF'
+[Unit]
+Description=WinAVF Ubuntu userspace frame capture
+
+[Service]
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal+console
+ExecStart=/usr/bin/python3 /run/winavf-frame-bridge.py
+EOF
+if [ -f /run/winavf-frame-bridge.py ]; then
+  echo 'LV:FRAME_BRIDGE_SOURCE=INITRD_OVERLAY' >/dev/console
+elif [ -f /usr/local/sbin/winavf-frame-bridge ]; then
+  cp /usr/local/sbin/winavf-frame-bridge /run/winavf-frame-bridge.py
+  chmod 0755 /run/winavf-frame-bridge.py
+  echo 'LV:FRAME_BRIDGE_SOURCE=P7_FALLBACK' >/dev/console
+fi
+if [ -x /run/winavf-frame-bridge.py ]; then
+  ln -sf ../winavf-frame.socket /run/systemd/system/sockets.target.wants/winavf-frame.socket
+  echo 'LV:FRAME_COPY=YES' >/dev/console
+else
+  echo 'LV:FRAME_COPY=NO' >/dev/console
+fi
+if [ -f /usr/local/sbin/winavf-Xtigervnc ]; then
+  xvnc_target="${rootmnt:-/root}/usr/local/sbin/winavf-Xtigervnc"
+  mkdir -p "${rootmnt:-/root}/usr/local/sbin"
+  cp /usr/local/sbin/winavf-Xtigervnc "$xvnc_target"
+  chmod 0755 "$xvnc_target"
+  echo 'LV:XVNC_ROOT_COPY=YES' >/dev/console
+else
+  echo 'LV:XVNC_ROOT_COPY=NO' >/dev/console
+fi
+if [ -x "${rootmnt:-/root}/usr/local/sbin/winavf-Xtigervnc" ]; then
+  cat > /run/winavf-xvnc-session.sh <<'EOF'
+#!/bin/sh
+set -eu
+echo 'LV:XVNC_START' >&2
+i=0
+while [ ! -d /run/user/1000 ] && [ "$i" -lt 30 ]; do
+  i=$((i + 1))
+  sleep 1
+done
+if [ ! -d /run/user/1000 ]; then
+  echo 'LV:USER_RUNTIME=FAIL' >&2
+  exit 1
+fi
+export XDG_RUNTIME_DIR=/run/user/1000
+echo 'LV:USER_RUNTIME=PASS' >&2
+export DISPLAY=:1 XDG_SESSION_TYPE=x11 GDK_BACKEND=x11
+if [ -f /usr/share/vulkan/icd.d/gfxstream_vk_icd.json ] && [ -f /usr/lib/aarch64-linux-gnu/dri/zink_dri.so ]; then
+  export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/gfxstream_vk_icd.json
+  if timeout 20 python3 - <<'PY' >&2
+import ctypes
+
+class VkInstanceCreateInfo(ctypes.Structure):
+    _fields_ = [
+        ('sType', ctypes.c_uint32), ('pNext', ctypes.c_void_p),
+        ('flags', ctypes.c_uint32), ('pApplicationInfo', ctypes.c_void_p),
+        ('enabledLayerCount', ctypes.c_uint32),
+        ('ppEnabledLayerNames', ctypes.c_void_p),
+        ('enabledExtensionCount', ctypes.c_uint32),
+        ('ppEnabledExtensionNames', ctypes.c_void_p),
+    ]
+
+vulkan = ctypes.CDLL('libvulkan.so.1')
+vulkan.vkCreateInstance.argtypes = (
+    ctypes.POINTER(VkInstanceCreateInfo), ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_void_p))
+vulkan.vkCreateInstance.restype = ctypes.c_int32
+vulkan.vkEnumeratePhysicalDevices.argtypes = (
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p)
+vulkan.vkEnumeratePhysicalDevices.restype = ctypes.c_int32
+vulkan.vkDestroyInstance.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+instance = ctypes.c_void_p()
+create = VkInstanceCreateInfo(sType=1)
+result = vulkan.vkCreateInstance(ctypes.byref(create), None,
+                                 ctypes.byref(instance))
+if result != 0:
+    raise SystemExit('LV:VK_CREATE_INSTANCE_RESULT=%d' % result)
+try:
+    count = ctypes.c_uint32()
+    result = vulkan.vkEnumeratePhysicalDevices(instance,
+                                                ctypes.byref(count), None)
+    print('LV:VK_ENUMERATE_RESULT=%d DEVICE_COUNT=%d' %
+          (result, count.value), flush=True)
+    if result != 0 or count.value == 0:
+        raise SystemExit(1)
+finally:
+    vulkan.vkDestroyInstance(instance, None)
+PY
+  then
+    export MESA_LOADER_DRIVER_OVERRIDE=zink
+    unset LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER
+    echo 'LV:ZINK_REQUESTED=YES' >&2
+  else
+    unset VK_ICD_FILENAMES MESA_LOADER_DRIVER_OVERRIDE
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe
+    echo 'LV:VK_DEVICE=FAIL_FALLBACK_SOFTPIPE' >&2
+  fi
+else
+  export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe
+  echo 'LV:VK_ICD_OR_ZINK=ABSENT_FALLBACK_SOFTPIPE' >&2
+fi
+/usr/local/sbin/winavf-Xtigervnc :1 -geometry 1920x1080 -depth 24 -rfbport 5901 -localhost -nolisten tcp -ac -SecurityTypes None &
+xvnc_pid=$!
+trap 'kill "$xvnc_pid" 2>/dev/null || true' EXIT
+i=0
+while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 30 ]; do
+  i=$((i + 1))
+  sleep 1
+done
+if [ ! -S /tmp/.X11-unix/X1 ]; then
+  echo 'LV:XVNC_SOCKET=FAIL' >&2
+  exit 1
+fi
+echo 'LV:XVNC_SOCKET=PASS' >&2
+dbus-run-session -- gnome-session --session=ubuntu &
+session_pid=$!
+sleep 55
+echo 'LV:GNOME_JOURNAL_BEGIN' >&2
+journalctl -b _UID=1000 --no-pager -n 120 -o short-monotonic >&2 || true
+echo 'LV:GNOME_JOURNAL_END' >&2
+echo 'LV:GNOME_CRASH_SUMMARY_BEGIN' >&2
+python3 - <<'PY' >&2 || true
+import glob
+import os
+
+paths = glob.glob('/var/crash/*gnome*')
+print('CRASH_FILES=%d' % len(paths), flush=True)
+wanted = {'Signal', 'ExecutablePath', 'ProcCmdline', 'StacktraceTop',
+          'Stacktrace', 'Registers', 'Title', 'ProblemType', 'Architecture'}
+for path in paths[:3]:
+    print('CRASH_FILE=%s BYTES=%d' % (path, os.stat(path).st_size), flush=True)
+    field = None
+    emitted = 0
+    with open(path, 'rb') as source:
+        for line in source:
+            if line and line[0] not in b' \t':
+                field = line.split(b':', 1)[0].decode('ascii', 'replace')
+                emitted = 0
+            if field in wanted and emitted < 32:
+                print(line[:240].decode('utf-8', 'replace').rstrip(), flush=True)
+                emitted += 1
+PY
+echo 'LV:GNOME_CRASH_SUMMARY_END' >&2
+for crash_report in /var/crash/_usr_bin_gnome-shell*.crash; do
+  [ -f "$crash_report" ] || continue
+  echo 'LV:GNOME_GDB_BEGIN' >&2
+  df -h /home/ubuntu >&2 || true
+  crash_dir=/home/ubuntu/winavf-gnome-core
+  if apport-unpack "$crash_report" "$crash_dir" >&2 && [ -f "$crash_dir/CoreDump" ]; then
+    ls -lh "$crash_dir/CoreDump" >&2
+    timeout 70 gdb -q -nx -batch \
+      -ex 'set pagination off' -ex 'info registers' \
+      -ex 'x/8i $pc-16' -ex 'bt 20' \
+      /usr/bin/gnome-shell "$crash_dir/CoreDump" 2>&1 | head -n 150 >&2 || true
+  else
+    echo 'LV:GNOME_CORE_UNAVAILABLE' >&2
+  fi
+  echo 'LV:GNOME_GDB_END' >&2
+  break
+done
+wait "$session_pid"
+EOF
+  chmod 0755 /run/winavf-xvnc-session.sh
+  mkdir -p /run/systemd/system/graphical.target.wants
+  cat > /run/systemd/system/winavf-xvnc.service <<'EOF'
+[Unit]
+Description=WinAVF isolated software GNOME display
+After=display-manager.service
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=HOME=/home/ubuntu
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStartPre=+/bin/sh -c 'echo LV:XVNC_PRE >/dev/console'
+ExecStart=/bin/sh /run/winavf-xvnc-session.sh
+
+[Install]
+WantedBy=graphical.target
+EOF
+  ln -sf ../winavf-xvnc.service /run/systemd/system/graphical.target.wants/winavf-xvnc.service
+  echo 'LV:XVNC_UNIT=CONFIGURED' >/dev/console
+fi
+echo 'LV:UNIT' >/dev/console

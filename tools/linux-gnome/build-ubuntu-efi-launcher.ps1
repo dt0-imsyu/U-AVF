@@ -46,11 +46,12 @@ $started = Get-Date
 $before = if (Test-Path -LiteralPath $efi) { Get-Item -LiteralPath $efi } else { $null }
 Push-Location $workspace
 try {
+  $ErrorActionPreference = 'Continue'
   & $python $buildPy -n 4 -a AARCH64 -t GCC5 -p 'ArmVirtPkg\ArmVirtKvmTool.dsc' -b DEBUG -m $module 2>&1 |
     Tee-Object -FilePath $log
   $exitCode = $LASTEXITCODE
 }
-finally { Pop-Location }
+finally { $ErrorActionPreference = 'Stop'; Pop-Location }
 
 $after = if (Test-Path -LiteralPath $efi) { Get-Item -LiteralPath $efi } else { $null }
 if ($exitCode -ne 0 -or $null -eq $after -or ($null -ne $before -and $after.LastWriteTime -le $started)) {

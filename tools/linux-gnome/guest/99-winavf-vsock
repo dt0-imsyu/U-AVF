@@ -1,5 +1,15 @@
 #!/bin/sh
-# This runs from the initramfs and survives switch_root.  The tiny listener
-# retries until virtio_vsock has been registered, so it does not assume an
-# exact Ubuntu module-load ordering.
-/usr/local/sbin/winavf-vsock-hello </dev/console >/dev/console 2>&1 &
+# Start the transport probe before root discovery.  Keep it independent from
+# the initramfs shell so a later switch_root cannot remove the listener.
+echo 'LV:PRE' >/dev/console
+if [ -f /scripts/init-premount/winavf-frame-bridge.py ]; then
+  mkdir -p /run
+  cp /scripts/init-premount/winavf-frame-bridge.py /run/winavf-frame-bridge.py
+  chmod 0755 /run/winavf-frame-bridge.py
+  echo 'LV:FRAME_EARLY_COPY=YES' >/dev/console
+else
+  echo 'LV:FRAME_EARLY_COPY=NO' >/dev/console
+fi
+if [ -x /usr/local/sbin/winavf-vsock-hello ]; then
+  /usr/local/sbin/winavf-vsock-hello >/dev/console 2>&1 &
+fi
