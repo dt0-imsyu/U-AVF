@@ -1,0 +1,56 @@
+U-AVF Source-Available License 1.0
+Copyright (c) 2026 U-AVF project owner (GitHub: dt0-imsyu).
+
+1. Scope
+These terms apply only to original U-AVF material explicitly listed in
+LICENSE_SCOPE.md. They are not an open-source license. Merely being in this
+repository or APK does not establish coverage. Earlier Apache-licensed versions,
+third-party material and components subject to incompatible obligations are
+excluded. Third-party and mandatory legal rights always take precedence.
+
+2. Official binary use
+You may download, install, run official unmodified U-AVF binaries and keep personal
+backup copies, including use at work, without a license fee. Guest software
+licenses remain your responsibility. No permission is granted to incorporate
+covered material into another product or service, distribute modified binaries,
+sell or sublicense it. Redistribution of covered official binaries requires prior
+written permission; sharing a link to the official project is permitted.
+
+3. Source inspection
+You may read covered source and make local copies solely for inspection,
+evaluation and reporting issues to the project. Reuse in other projects,
+modification for distribution, redistribution of covered source, and derivative
+products require prior written permission. Public-hosting terms may separately
+permit viewing or forking on that platform; these terms do not override them.
+
+4. Preserved rights
+These terms do not withdraw any prior Apache-2.0 or other license grant. They do
+not restrict rights granted by GPL, LGPL, BSD, MIT, OFL or another third-party
+license, including source availability, modification, redistribution or library
+replacement/relinking where required. Mandatory legal rights are preserved.
+There is no blanket restriction on the firmware/initrd aggregate. Any component
+that cannot lawfully be covered is excluded, irrespective of a scope listing.
+
+5. Branding and permissions
+No trademark/endorsement license is granted; truthful descriptive use remains
+unaffected. Request permission through the project owner's contact at
+https://github.com/dt0-imsyu/U-AVF. Separate written agreements may grant broader
+rights. Public source availability alone does not authorize reuse of covered code.
+
+6. Warranty and liability
+To the extent permitted by applicable law, covered material is provided AS IS,
+without warranties of merchantability, fitness or non-infringement. To that same
+extent, the copyright holder is not liable for loss of data, profits or indirect
+damages arising from use. These exclusions do not override mandatory consumer
+protections or liability that cannot lawfully be excluded. Back up VM data before
+destructive operations. No choice of jurisdiction is imposed by this document.
+
+7. Third-party and patent clearance
+These terms do not establish patent clearance for codecs, ownership of guest
+software or third-party marks, or permission to redistribute operating-system
+media. Required corresponding sources, notices and any codec/patent permissions
+remain separate obligations.
+
+Adopted locally 2026-10-04 for the explicit scope only. No public release is
+authorized by adoption. Earlier public Apache-2.0 grants remain effective.
+

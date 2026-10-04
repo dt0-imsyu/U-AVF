@@ -76,13 +76,15 @@ def main():
     parser.add_argument("--launcher", required=True, type=Path)
     parser.add_argument("--firmware", required=True, type=Path)
     parser.add_argument("--bsdtar", required=True, type=Path)
+    parser.add_argument("--initrd", required=True, type=Path,
+                        help="audited initrd to install as /CASPER/INITRD")
     parser.add_argument("--esp", required=True, type=Path)
     args = parser.parse_args()
-    iso, launcher, firmware, bsdtar, esp = (
+    iso, launcher, firmware, bsdtar, initrd_source, esp = (
         path.resolve() for path in
-        (args.iso, args.launcher, args.firmware, args.bsdtar, args.esp)
+        (args.iso, args.launcher, args.firmware, args.bsdtar, args.initrd, args.esp)
     )
-    for path in (iso, launcher, firmware, bsdtar):
+    for path in (iso, launcher, firmware, bsdtar, initrd_source):
         if not path.is_file():
             raise SystemExit(f"missing input: {path}")
     if sha256(iso) != ISO_HASH:
@@ -94,10 +96,9 @@ def main():
     esp.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="uavf-platform-") as scratch:
         work = Path(scratch)
-        kernel, initrd, fat_path = (work / name for name in
-                                    ("vmlinuz", "initrd", "platform.fat"))
+        kernel, iso_initrd, fat_path = (work / name for name in
+                                        ("vmlinuz", "iso-initrd", "platform.fat"))
         extract(bsdtar, iso, "casper/vmlinuz", kernel)
-        extract(bsdtar, iso, "casper/initrd", initrd)
         fat_path.touch()
         fat = PyFat()
         fat.mkfs(str(fat_path), fat_type=PyFat.FAT_TYPE_FAT32,
@@ -110,7 +111,7 @@ def main():
             copy_into(volume, launcher, "/EFI/BOOT/BOOTAA64.EFI")
             copy_into(volume, firmware, "/EFI/EDK2/QEMU_EFI.fd")
             copy_into(volume, kernel, "/CASPER/VMLINUZ")
-            copy_into(volume, initrd, "/CASPER/INITRD")
+            copy_into(volume, initrd_source, "/CASPER/INITRD")
         finally:
             volume.close()
         mbr, primary, backup, entries = gpt()
@@ -133,7 +134,7 @@ def main():
             raise
         for label, path in (("ISO", iso), ("LAUNCHER", launcher),
                             ("FIRMWARE", firmware), ("KERNEL", kernel),
-                            ("INITRD", initrd), ("ESP", esp)):
+                            ("INITRD", initrd_source), ("ESP", esp)):
             print(f"{label}_SHA256={sha256(path)}")
         print("RESULT=PASS")
         print("ISO_MUTATED=NO")

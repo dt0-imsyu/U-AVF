@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function state(value) {
+      return value in ['pass', 'fail', 'not_selected', 'not_tested'];
+    }
+    function validReport(data) {
+      return data.keys().hasAll(['schemaVersion','consent','submittedAt','appVersion','androidApi','androidRelease','manufacturer','model','results','runtime'])
+        && data.keys().hasOnly(['schemaVersion','consent','submittedAt','appVersion','androidApi','androidRelease','manufacturer','model','results','runtime'])
+        && data.schemaVersion == 1 && data.consent == true
+        && data.submittedAt == request.time
+        && data.appVersion is string && data.appVersion.size() <= 64
+        && data.androidApi is int && data.androidApi >= 31 && data.androidApi <= 100
+        && data.androidRelease is string && data.androidRelease.size() <= 32
+        && data.manufacturer is string && data.manufacturer.size() <= 48
+        && data.model is string && data.model.size() <= 64
+        && data.results is map
+        && data.results.keys().hasAll(['arm64','avf','permissions','storage','iso','platform'])
+        && data.results.keys().hasOnly(['arm64','avf','permissions','storage','iso','platform'])
+        && state(data.results.arm64) && state(data.results.avf)
+        && state(data.results.permissions) && state(data.results.storage)
+        && state(data.results.iso) && state(data.results.platform)
+        && data.runtime is map
+        && data.runtime.keys().hasAll(['boot','vsock','openGL'])
+        && data.runtime.keys().hasOnly(['boot','vsock','openGL'])
+        && state(data.runtime.boot) && state(data.runtime.vsock) && state(data.runtime.openGL);
+    }
+    match /compatibility_reports/{owner}/runs/{run} {
+      // 32 immutable reports per anonymous identity; this is not strong anti-abuse
+      // against creating new identities. Add App Check before public distribution.
+      allow create: if request.auth != null
+        && request.auth.uid == owner
+        && request.auth.token.firebase.sign_in_provider == 'anonymous'
+        && run.matches('^([0-9]|[12][0-9]|3[01])$')
+        && validReport(request.resource.data);
+      allow read, update, delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

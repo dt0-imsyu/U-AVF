@@ -1,0 +1,78 @@
+#cloud-config
+autoinstall:
+  version: 1
+  interactive-sections:
+    - locale
+    - keyboard
+    - identity
+  early-commands:
+    - /usr/local/sbin/uavf-install-preflight.sh
+  source:
+    id: ubuntu-desktop
+    search_drivers: false
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+    variant: ""
+  identity:
+    realname: U-AVF User
+    username: uavf
+    hostname: uavf-ubuntu
+    # Locked placeholder, never a shared default password. Interactive identity
+    # must replace it; post-install refuses readiness without a usable account.
+    password: '!'
+  timezone: Etc/UTC
+  storage:
+    version: 2
+    config:
+      - id: uavf-disk
+        type: disk
+        path: /dev/vda
+        ptable: gpt
+        preserve: true
+      - id: uavf-esp
+        type: partition
+        device: uavf-disk
+        number: 1
+        size: 126M
+        offset: 1048576
+        preserve: true
+        flag: boot
+        grub_device: true
+      - id: uavf-iso
+        type: partition
+        device: uavf-disk
+        number: 2
+        size: 3967463424B
+        offset: 134217728
+        preserve: true
+      - id: uavf-root
+        type: partition
+        device: uavf-disk
+        number: 3
+        size: 32G
+        offset: 4102029312
+        preserve: true
+      - id: uavf-esp-format
+        type: format
+        volume: uavf-esp
+        fstype: fat32
+        preserve: true
+      - id: uavf-esp-mount
+        type: mount
+        device: uavf-esp-format
+        path: /boot/efi
+      - id: uavf-root-format
+        type: format
+        volume: uavf-root
+        fstype: ext4
+        label: U-AVF Ubuntu Root
+        preserve: false
+      - id: uavf-root-mount
+        type: mount
+        device: uavf-root-format
+        path: /
+  updates: security
+  shutdown: poweroff
+  late-commands:
+    - /usr/local/sbin/uavf-install-runtime.sh --installer-complete

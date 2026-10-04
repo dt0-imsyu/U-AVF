@@ -3,6 +3,7 @@ import argparse
 import hashlib
 from pathlib import Path
 import struct
+import subprocess
 import zlib
 from pyfatfs.PyFatFS import PyFatFS
 
@@ -32,6 +33,24 @@ def region_hash(source, offset, length):
     return value.hexdigest().upper()
 
 
+def main_zstd_payload(path):
+    data = path.read_bytes()
+    offset = 0
+    while offset + 110 <= len(data) and data[offset:offset + 6] == b"070701":
+        namesize = int(data[offset + 94:offset + 102], 16)
+        filesize = int(data[offset + 54:offset + 62], 16)
+        record = (offset + 110 + namesize + 3) & ~3
+        record = (record + filesize + 3) & ~3
+        name = data[offset + 110:offset + 110 + namesize].rstrip(b"\0")
+        offset = record
+        if name == b"TRAILER!!!":
+            offset = (offset + 511) & ~511
+            break
+    if data[offset:offset + 4] != b"\x28\xb5\x2f\xfd":
+        raise SystemExit("initrd main Zstd stream missing")
+    return data[offset:]
+
+
 def header_ok(data, current_lba, alternate_lba, entries_crc):
     if data[:8] != b"EFI PART" or len(data) != SECTOR:
         return False
@@ -50,6 +69,8 @@ def main():
     parser.add_argument("--iso", type=Path, required=True)
     parser.add_argument("--combined", type=Path, required=True)
     parser.add_argument("--launcher", type=Path)
+    parser.add_argument("--initrd", type=Path, required=True)
+    parser.add_argument("--zstd", type=Path, required=True)
     args = parser.parse_args()
     iso_bytes = args.iso.stat().st_size
     combined_bytes = args.combined.stat().st_size
@@ -102,6 +123,29 @@ def main():
                 if path.endswith("BOOTAA64.EFI"):
                     with args.launcher.open("rb") as source:
                         expected = region_stream_hash(source)
+                elif path.endswith("INITRD"):
+                    with args.initrd.open("rb") as source:
+                        expected = region_stream_hash(source)
+                    if current_hash != expected:
+                        raise SystemExit(f"FAT reverse-extracted initrd SHA mismatch: {current_hash} != {expected}")
+                    import tempfile
+                    with tempfile.TemporaryDirectory(prefix="uavf-combined-initrd-") as scratch:
+                        compressed = Path(scratch) / "initrd"
+                        main_stream = Path(scratch) / "initrd.zst"
+                        unpacked = Path(scratch) / "initrd.cpio"
+                        with volume.openbin(path, "r") as source, compressed.open("wb") as target:
+                            import shutil
+                            shutil.copyfileobj(source, target)
+                        main_stream.write_bytes(main_zstd_payload(compressed))
+                        subprocess.run([str(args.zstd), "-d", "-q", "-f", str(main_stream), "-o", str(unpacked)], check=True)
+                        payload = unpacked.read_bytes()
+                    for marker in (b"winavf-frame-bridge.py", b"99-winavf-vsock", b"LV:PRE", b"LV:UNIT"):
+                        if marker not in payload:
+                            raise SystemExit(f"combined-disk initrd marker missing: {marker.decode()}")
+                    print(f"INITRD_SOURCE_SHA256={expected}")
+                    print(f"INITRD_EXTRACTED_SHA256={current_hash}")
+                    print("INITRD_REVERSE_EXTRACTION=PASS")
+                    continue
                 else:
                     with original.openbin(path, "r") as source:
                         expected = region_stream_hash(source)

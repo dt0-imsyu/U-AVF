@@ -6,13 +6,37 @@
     <uses-permission android:name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" />
     <!-- Diagnostic-only localhost TCP endpoint for the raw KD bridge. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-feature android:name="android.software.virtualization_framework" android:required="true" />
+
+    <!-- Android 16 AppOps validates even the empty attribution tag used by
+         AAudio clients launched under this app's UID (crosvm audio backend). -->
+    <attribution
+        android:tag=""
+        android:label="@android:string/unknownName" />
 
     <!-- Development build only: permits adb run-as to preload the one disposable
          Linux image directly into app-private storage, avoiding a second 9 GiB
          external staging copy.  Remove this before any production release. -->
     <application android:debuggable="true" android:icon="@drawable/ic_uavf_brand" android:label="U-AVF" android:theme="@android:style/Theme.Material.NoActionBar">
-        <activity android:name=".MainActivity" android:exported="true">
+        <service android:name=".VmRuntimeService" android:exported="false"
+            android:foregroundServiceType="specialUse" android:stopWithTask="false">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keep a user-started Android Virtualization Framework desktop VM and its owner process alive while its display window is backgrounded." />
+        </service>
+        <service android:name=".VmKeyboardAccessibilityService"
+            android:label="@string/vm_keyboard_accessibility_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/vm_keyboard_accessibility" />
+        </service>
+        <activity android:name=".MainActivity" android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|uiMode|density">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

@@ -1,0 +1,10 @@
+[Unit]
+Description=U-AVF optional text clipboard channel
+
+[Socket]
+ListenStream=vsock::4054
+Accept=yes
+MaxConnections=1
+
+[Install]
+WantedBy=sockets.target

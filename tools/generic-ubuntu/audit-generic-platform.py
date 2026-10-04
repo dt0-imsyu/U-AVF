@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import shutil
 import struct
+import subprocess
 import tempfile
 import zlib
 
@@ -21,11 +22,33 @@ def digest(stream):
     return value.hexdigest().upper()
 
 
+def main_zstd_payload(path):
+    data = path.read_bytes()
+    offset = 0
+    while offset + 110 <= len(data) and data[offset:offset + 6] == b"070701":
+        namesize = int(data[offset + 94:offset + 102], 16)
+        filesize = int(data[offset + 54:offset + 62], 16)
+        record = offset + 110 + namesize
+        record = (record + 3) & ~3
+        record += filesize
+        record = (record + 3) & ~3
+        name = data[offset + 110:offset + 110 + namesize].rstrip(b"\0")
+        offset = record
+        if name == b"TRAILER!!!":
+            offset = (offset + 511) & ~511
+            break
+    if data[offset:offset + 4] != b"\x28\xb5\x2f\xfd":
+        raise SystemExit("initrd main Zstd stream missing")
+    return data[offset:]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--esp", required=True, type=Path)
     parser.add_argument("--launcher", required=True, type=Path)
     parser.add_argument("--firmware", required=True, type=Path)
+    parser.add_argument("--initrd", required=True, type=Path)
+    parser.add_argument("--zstd", required=True, type=Path)
     args = parser.parse_args()
     if args.esp.stat().st_size != IMAGE_SIZE:
         raise SystemExit("platform disk size mismatch")
@@ -68,6 +91,25 @@ def main():
                 for inside in ("/CASPER/VMLINUZ", "/CASPER/INITRD"):
                     if fs.getsize(inside) == 0:
                         raise SystemExit(f"empty file: {inside}")
+                with fs.openbin("/CASPER/INITRD", "r") as installed, args.initrd.open("rb") as expected:
+                    installed_hash = digest(installed)
+                    expected_hash = digest(expected)
+                if installed_hash != expected_hash:
+                    raise SystemExit(f"initrd reverse-extraction SHA mismatch: {installed_hash} != {expected_hash}")
+                extracted = Path(scratch) / "extracted-initrd"
+                with fs.openbin("/CASPER/INITRD", "r") as installed, extracted.open("wb") as target:
+                    shutil.copyfileobj(installed, target)
+                compressed = Path(scratch) / "main-initrd.zst"
+                compressed.write_bytes(main_zstd_payload(extracted))
+                unpacked = Path(scratch) / "unpacked-initrd"
+                subprocess.run([str(args.zstd), "-d", "-q", "-f", str(compressed), "-o", str(unpacked)], check=True)
+                payload = unpacked.read_bytes()
+                for marker in (b"winavf-frame-bridge.py", b"99-winavf-vsock", b"LV:PRE", b"LV:UNIT"):
+                    if marker not in payload:
+                        raise SystemExit(f"initrd CPIO marker missing after FAT extraction: {marker.decode()}")
+                print(f"INITRD_SOURCE_SHA256={expected_hash}")
+                print(f"INITRD_EXTRACTED_SHA256={installed_hash}")
+                print("INITRD_REVERSE_EXTRACTION=PASS")
             finally:
                 fs.close()
     print("RESULT=PASS")

@@ -1,67 +1,86 @@
 # U-AVF
 
-![U-AVF icon](android-app/res/drawable/ic_uavf_brand.png)
-
-U-AVF is an experimental, non-root Android Virtualization Framework (AVF) launcher for ARM64 guests on a Samsung Galaxy Tab S11. It has separate **Windows** and **Linux** modes. The project uses GenieZone/crosvm, a kernel-first U-Boot stage, and EDK2. It does not unlock the bootloader or modify Android system partitions.
-
-This is a research build, **not** a ready-to-install Windows or Ubuntu VM. Large guest media and firmware artifacts are not distributed in Git. The APK alone cannot boot either guest without verified local media.
+Non-root Ubuntu Desktop ARM64 on Android Virtualization Framework.
+[Download U-AVF 1.0](https://github.com/dt0-imsyu/U-AVF/releases/tag/v1.0.0).
 
 ## English
 
-### Current status
+U-AVF launches an installed Ubuntu GNOME desktop without rooting Android, unlocking
+the bootloader or flashing. Tested on Samsung Galaxy Tab S11 (GenieZone/crosvm).
+The official Ubuntu ISO is not modified. Other devices require their own validation.
+The current APK requires Android 16 / API 36 or newer, ARM64 and usable AVF/custom-VM permissions.
 
-| Mode | Confirmed | Still missing |
-| --- | --- | --- |
-| Windows | U-Boot → EDK2 → Windows Boot Manager → `winload.efi` → successful original `ExitBootServices()` return; graphical UEFI frames appear in the app | Windows kernel/WinPE user-mode progress after EBS and Windows desktop |
-| Linux | An untouched Ubuntu 24.04.5 Desktop ARM64 ISO boots through Linux `/init`, systemd, GDM, and GNOME Shell; virtio-GPU binds and creates a DRM framebuffer | GNOME desktop pixels in the app and user input; a capset timeout still needs investigation |
+### What works
 
-Linux's `GNOME_USERSPACE = PASS` is evidenced by the final serial log, including `GNOME Shell started` and GDM session registration. **It is not a claim that the GNOME desktop is visible or interactive in U-AVF yet.** Read the [generic Ubuntu runtime report](docs/GENERIC_UBUNTU_GNOME_USERSPACE_2026-09-24.md).
+- Managed persistent workspace and automatic Ubuntu installation/bootstrap.
+- Hardware OpenGL through VirGL/Mali; encoded 1920×1200 display with 60 FPS capability.
+- Keyboard, mouse, touch, internet and audio on the tested configuration.
+- Opt-in text clipboard; sharing can be toggled without restarting the VM.
+- Device prerequisite checks, workspace settings, diagnostics and storage growth.
 
-Windows reaches EBS, but `WINDOWS_POST_EBS` and `WINPE_USERLAND` remain unconfirmed. An independently reproduced EL1 physical timer issue is documented for Samsung; it has **not** been proven to cause the Windows stall.
+Hardware Vulkan is not available on the tested host. Windows remains research-only;
+Windows/WinPE desktop is not achieved. Shared folder and universal ISO support are
+not promised. Installer flicker, slow App Center and installed-status transition
+after the first reboot remain known issues. See [release notes](docs/release-preparation/RELEASE_NOTES.md).
 
-### Using the app
+### Setup
 
-1. Build and install the development APK with the established Android SDK/NDK environment:
+1. Install the official signed APK from Releases; do not uninstall an existing app
+   to bypass a signature mismatch. Normal same-key updates preserve the workspace.
+2. Complete onboarding and the real device prerequisite check. If AVF permissions
+   are missing, follow the app's USB-debugging/ADB instructions:
+   `adb shell pm grant com.example.winavf android.permission.MANAGE_VIRTUAL_MACHINE`
+   and `adb shell pm grant com.example.winavf android.permission.USE_CUSTOM_VIRTUAL_MACHINE`.
+   Availability depends on the device; a grant command alone does not prove support.
+3. Download **Ubuntu 24.04.5 Desktop ARM64** from the official Ubuntu page opened
+   by the app. Select the ISO in U-AVF; it checks the supported file.
+4. Create a workspace, choose root storage, then Install. Follow Ubuntu Setup for
+   language/keyboard/account. Preserve the managed storage layout.
+5. Reboot after installation and wait for bootstrap. Use Launch Ubuntu thereafter.
+   Temporary Live Session intentionally boots the ISO, not your installed system.
+6. Enable Share text clipboard under Input if desired. Reinstall/Delete erase
+   Ubuntu data. Clearing Android application data may remove private workspaces.
 
-   ```powershell
-   cd C:\path\to\U-AVF\android-app
-   .\build.ps1
-   $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
-   & $adb install -r .\out\WinAVF-test.apk
-   ```
+[Detailed quick start](docs/release-preparation/QUICK_START.md) ·
+[Privacy notice](docs/release-preparation/PRIVACY.md) ·
+[Third-party compliance](docs/release-preparation/THIRD_PARTY_COMPLIANCE.md).
 
-2. Open **U-AVF**. In **Settings**, select **Windows mode** or **Linux mode**. The choice is remembered. **Launch** starts the selected VM, **Stop** requests it to stop, and **Logs** shows local event and serial output. The guest display occupies the main screen; the top controls can be collapsed.
-3. Stage only the audited media required by the chosen mode. The app checks exact file sizes and SHA-256 hashes before launch. Windows uses the immutable known-good image and reversible firmware patch. Linux uses the verified stock Ubuntu ISO plus a separate platform disk containing the boot chain; the ISO itself is never edited. See [STATE.md](STATE.md), the [operator guide](docs/APP_UI_AND_OPERATOR_GUIDE_2026-09-21.md), and the [generic Ubuntu report](docs/GENERIC_UBUNTU_GNOME_USERSPACE_2026-09-24.md) before attempting a run.
+### Licensing and development
 
-The build currently references a known-good U-Boot wrapper in the developer's local workspace, so a fresh clone does not build or run standalone. This limitation is intentional and should not be hidden by publishing unaudited guest images.
+This is a multi-license repository. Only the original files in [LICENSE_SCOPE.md](LICENSE_SCOPE.md)
+use [U-AVF Source-Available License 1.0](LICENSE-UAVF.txt), requiring permission for
+reuse in another product. Older Apache rights remain; third-party components retain
+their licenses. See [LICENSE](LICENSE). This is not a blanket open-source license.
 
-### Safety and repository layout
-
-- Preserve the immutable Windows baseline SHA-256: `2582CAE49FDB3BCD7229280DC8595E5407460BCBADED8FF97AEC73D8211278A7`.
-- Use disposable candidates and verify their hashes and rollback. Never target a physical disk with image-editing scripts.
-- `android-app/`: launcher, AVF integration, pre-EBS WAVF decoder and renderer.
-- `firmware/`: EDK2 platform and GOP producer changes.
-- `tools/generic-ubuntu/`: platform-disk builder and offline auditors; no modified stock ISO.
-- `docs/`, `STATE.md`: evidence, procedures, limitations, and milestones.
-- [Local artifact policy](docs/LOCAL_ARTIFACT_POLICY_2026-09-14.md): images, firmware binaries, APK outputs, and raw runtime logs stay outside ordinary Git commits.
-
-The physical-timer report for Samsung is available in the [submission kit](docs/SAMSUNG_GENIEZONE_SUBMISSION_KIT_2026-09-14.txt).
+A fresh clone does not include all large platform payloads and cannot build the
+tested release standalone. The release build script accepts the official APK as
+the tested binary-payload base; third-party source/build provenance review remains incomplete.
+No guest disks, personal logs, signing keys or Windows media belong in Git.
 
 ## Русский
 
-### Что работает
+U-AVF запускает установленную Ubuntu GNOME через AVF без root, разблокировки и
+прошивки. Проверенный планшет — Samsung Galaxy Tab S11. Официальный ISO не изменяется.
+Текущий APK требует Android 16 / API 36 или новее, ARM64 и доступные разрешения AVF/custom VM.
 
-| Режим | Подтверждено | Пока не готово |
-| --- | --- | --- |
-| Windows | U-Boot → EDK2 → Windows Boot Manager → `winload.efi` → успешный возврат из оригинального `ExitBootServices()`; графический UEFI виден в приложении | Подтверждение выполнения ядра/WinPE после EBS и рабочий стол Windows |
-| Linux | Неизменённый официальный Ubuntu 24.04.5 Desktop ARM64 ISO доходит до `/init`, systemd, GDM и GNOME Shell; virtio-GPU создаёт DRM framebuffer | Картинка GNOME в приложении и управление; требуется разобраться с capset timeout |
+Работают постоянная Ubuntu, установка/bootstrap, аппаратный OpenGL VirGL/Mali,
+кодированный вывод 1920×1200 с возможностью 60 FPS, ввод, сеть и звук. Добровольный
+текстовый буфер можно включать без перезапуска. Аппаратного Vulkan и рабочего Windows desktop нет. Универсальные ISO и
+общая папка не обещаются. Сохраняются мерцание installer и медленный App Center.
 
-`GNOME_USERSPACE = PASS` означает подтверждённый запуск GNOME Shell по serial-логу. Это **ещё не** означает, что рабочий стол виден на экране U-AVF или им можно управлять. Подробности — в [отчёте](docs/GENERIC_UBUNTU_GNOME_USERSPACE_2026-09-24.md). Windows доходит до EBS, но `WINDOWS_POST_EBS` и `WINPE_USERLAND` пока не подтверждены. Найденный отдельно дефект физического таймера не объявляется доказанной причиной остановки Windows.
+Установите подписанный APK из Releases, пройдите тест совместимости и выдайте
+указанные приложением AVF-разрешения через ADB. Скачайте официальный Ubuntu 24.04.5
+**Desktop ARM64**, выберите ISO, создайте workspace с нужным размером и нажмите
+Install. Задайте язык/клавиатуру/учётную запись, не меняя служебную разметку.
+После reboot дождитесь первого запуска. Далее используйте Launch Ubuntu, а не
+Temporary Live Session. Reinstall/Delete удаляют Ubuntu; очистка данных APK тоже
+может удалить workspace. Обновления с той же подписью не требуют переустановки.
 
-### Как пользоваться
+Новая source-available лицензия касается только перечисленных новых собственных
+файлов. Чужие компоненты и старые Apache-права остаются прежними. Полная проверка
+исходников/сборки сторонних компонентов ещё не завершена.
 
-1. Соберите тестовый APK командой `android-app\build.ps1` в подготовленном Windows/Android SDK окружении и установите `android-app\out\WinAVF-test.apk` через ADB. Обычный клон репозитория **не содержит** больших образов и локального проверенного U-Boot wrapper, поэтому сам по себе не готов к запуску VM.
-2. Откройте **U-AVF**. В **Settings** выберите **Windows mode** или **Linux mode**. Выбор запоминается. **Launch** запускает выбранный режим, **Stop** запрашивает остановку VM, **Logs** показывает журнал. Экспериментальные диагностические профили не входят в обычный выбор режимов.
-3. До запуска разместите только проверенные файлы для выбранного режима. Приложение сверяет размер и SHA-256. Windows использует неизменяемый known-good образ и обратимый firmware patch; Linux — отдельный платформенный диск и официальный ISO без изменения его байтов. Точные ограничения и методы: [STATE.md](STATE.md), [руководство оператора](docs/APP_UI_AND_OPERATOR_GUIDE_2026-09-21.md), [отчёт Ubuntu](docs/GENERIC_UBUNTU_GNOME_USERSPACE_2026-09-24.md).
-
-Нельзя менять baseline Windows с SHA-256 `2582CAE49FDB3BCD7229280DC8595E5407460BCBADED8FF97AEC73D8211278A7` или запускать скрипты редактирования образа на физическом диске. Образы, firmware binaries, APK и сырые логи намеренно не лежат в обычном Git; см. [политику артефактов](docs/LOCAL_ARTIFACT_POLICY_2026-09-14.md). [Отчёт для Samsung](docs/SAMSUNG_GENIEZONE_SUBMISSION_KIT_2026-09-14.txt) описывает отдельный дефект таймера.
+Статистика совместимости добровольная и по умолчанию выключена. При согласии
+результаты идут в облачную Firebase для разработки и оптимизации, не в локальную
+базу. Пароли, гостевые файлы и буфер туда не отправляются. Подробнее:
+[Privacy](docs/release-preparation/PRIVACY.md).

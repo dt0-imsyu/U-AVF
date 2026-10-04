@@ -1,0 +1,10 @@
+[Unit]
+Description=U-AVF installed encoded display and input
+
+[Socket]
+ListenStream=vsock::4055
+Accept=yes
+MaxConnections=1
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=U-AVF host control channel
+
+[Socket]
+ListenStream=vsock::4056
+Accept=yes
+MaxConnections=1
+
+[Install]
+WantedBy=sockets.target

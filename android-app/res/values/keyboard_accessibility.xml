@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="vm_keyboard_accessibility_label">U-AVF VM keyboard</string>
+    <string name="vm_keyboard_accessibility_description">Route physical keyboard shortcuts, including Cmd/Super and Alt+Tab, to Ubuntu only while the U-AVF VM viewport is focused. No screen content is read or recorded. Ctrl+Alt+Shift+Esc opens VM controls and releases capture. Outside U-AVF, normal Android shortcuts remain unchanged. Another key-filtering service may conflict.</string>
+</resources>

@@ -1,0 +1,9 @@
+[Unit]
+Description=U-AVF bounded UTF-8 clipboard connection
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/uavf-clipboard.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStopSec=3

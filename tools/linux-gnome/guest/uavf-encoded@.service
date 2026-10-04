@@ -1,0 +1,12 @@
+[Unit]
+Description=U-AVF encoded desktop connection
+
+[Service]
+Environment=GST_PLUGIN_PATH=/usr/local/lib/uavf-encoded/plugins
+Environment=LD_LIBRARY_PATH=/usr/local/lib/uavf-encoded/lib
+ExecStart=/usr/bin/python3 /usr/local/lib/uavf-encoded/uavf-encoded-display.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+KillMode=control-group
+TimeoutStopSec=5
