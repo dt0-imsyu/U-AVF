@@ -3,6 +3,20 @@
 Non-root Ubuntu Desktop ARM64 on Android Virtualization Framework.
 [Download U-AVF 1.0](https://github.com/dt0-imsyu/U-AVF/releases/tag/v1.0.0).
 
+## Screenshots / Скриншоты
+
+Ubuntu GNOME desktop / Рабочий стол Ubuntu GNOME
+
+![Ubuntu GNOME desktop running in U-AVF](docs/screenshots/ubuntu-desktop.jpg)
+
+Workspace controls / Управление workspace
+
+![U-AVF Ubuntu workspace controls](docs/screenshots/ubuntu-workspace.jpg)
+
+Boot progress / Состояние загрузки
+
+![U-AVF Ubuntu boot progress](docs/screenshots/ubuntu-startup.jpg)
+
 ## English
 
 U-AVF launches an installed Ubuntu GNOME desktop without rooting Android, unlocking
