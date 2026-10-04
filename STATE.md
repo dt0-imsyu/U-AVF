@@ -1,4 +1,176 @@
-# WinAVF state — 2026-09-24
+# U-AVF state — 2026-10-04
+
+## Current public baseline — U-AVF 1.0
+
+This section is authoritative. Older checkpoints below are historical evidence,
+not current blockers or instructions to recreate P/V diagnostic images.
+
+- Public stable release: https://github.com/dt0-imsyu/U-AVF/releases/tag/v1.0.0.
+- Release source/tag: `78656e7310285e9267fb5a443d8a3f367483fc33`.
+- APK: `U-AVF.1.0.apk`, versionName `1.0`, versionCode `14`, ARM64/API 36.
+- APK SHA-256: `4C0AAFC1BAB2BF3000CBFDEB473C925FFA65DF15D151D390E26550D80B4184D8`.
+- The public 1.0 APK has been built, signed and published. The tablet remained on
+  its tested RC4 installation; do not describe public 1.0 as device-installed.
+
+### Proven Linux/product path
+
+- Persistent Ubuntu installation and boot work. Ubuntu Setup opens automatically;
+  the completed installer/reboot flow applies the runtime and selects installed boot.
+- Official Ubuntu 24.04.5 Desktop ARM64 ISO remains unchanged. Managed single
+  virtio-blk layout preserves platform/ESP and ISO; Ubuntu root is the install target.
+- Preserve the proven P7 platform contract, installed user data and Windows baseline.
+  No root/unlock/flash, no second virtio-blk, no auto-memory-balloon.
+- Hardware OpenGL: VirGL -> Mali-G925. Production encoded display supports the
+  previously proven 1920x1200 @ 60 FPS path; release preparation did not establish a
+  new sustained-FPS measurement. RFB/raw remain fallback, not the primary path.
+- Correct authenticated GNOME/GDM login and Firefox Snap startup were verified.
+  Input, network and low-latency audio have working baseline evidence.
+- Safe LLVM JIT target/cache invalidation addresses the localized SVE INDEX SIGILL
+  mismatch. App Center works but can be slow.
+- Clipboard is optional and off by default. New bidirectional/hot-toggle acceptance
+  and real partition/ext4-growth acceptance were explicitly skipped, not marked PASS.
+
+### Remaining architectural limits
+
+- Hardware Vulkan is NOT PASS. Guest Venus is present, but vendor virglrenderer
+  lacks Vulkan support; gfxstream reaches Mali and fails at memory registration:
+  `ResourceMapBlob -> register_memory -> EFAULT` on GenieZone.
+- Windows native AVF reaches Boot Manager, winload.efi and successful
+  ExitBootServices return. `WINDOWS_POST_EBS` and `WINPE` are NOT PASS.
+- Physical timer CNTP/PPI30 failure is independently reproduced; virtual timer
+  CNTV/PPI27 works. Windows dependence on the broken physical path is not proven.
+  `WINDOWS_BLOCKER_PHYSICAL_TIMER = STRONG_HYPOTHESIS`, not CONFIRMED.
+- Known release limitations: installer flicker, slow App Center, installed-status
+  transition after the first reboot; no promise of universal ISO or shared-folder support.
+
+### Release/privacy and next work
+
+- Firebase compatibility reporting is voluntary, off by default, explicitly cloud
+  based. Live anonymous-auth/create-only permission tests passed; guest files,
+  passwords and clipboard contents are not uploaded.
+- Privacy notice documents collected fields and no automatic expiry/in-app deletion.
+  Global anti-abuse protection and complete third-party source/build compliance
+  review are not claimed complete.
+- Scoped source-available licensing preserves historical Apache and third-party
+  licenses. Publication is not a legal/compliance certification.
+- Public release notes, quick start, privacy and license files are in
+  `docs/release-preparation/`. Keep future work regression-driven; do not restart
+  closed FPS or Vulkan flag experiments without new evidence.
+
+## Historical checkpoints — superseded, not current status
+
+## Current standard Linux launch — P40
+
+`LINUX_AUDIO_OUTPUT=PASS`: official Ubuntu ISO and packaged P40 platform
+prefix booted GNOME; user heard tablet-speaker audio with minimal delay after
+the low-latency guest `parec` / Android `AudioTrack` change. AVF vsock 4053
+reports stable 48 kHz stereo PCM; Android fast track reports about 66 ms
+latency and no increasing underrun count after startup. The VM remains running.
+The ordinary in-app Linux launch now uses the Linux-first VirGL/GBM/Xvnc
+platform and keeps the existing 4052 WAVF frame path. Direct `glxinfo`
+renderer proof and sustained 1080p30 under motion remain open. See
+`docs/UBUNTU_P40_LOW_LATENCY_AUDIO_2026-09-27.md`.
+
+## Latest decisive GPU A/B — Linux first GPU bind, 2026-09-27
+
+The frame bridge is stable beyond its former 180-second cutoff: `LV:FRAME_BRIDGE_SOURCE=INITRD_OVERLAY`, non-black GNOME frames, no late `streamClosed`; screenshot and logs are archived. Do not iterate on display transport without a new concrete failure.
+
+A disposable diagnostic FD excluded **only** the UEFI `VirtioGpuDxe` module. Linux autobooted headlessly and initialized virtio-GPU itself. The prior `virtio_gpu_get_capsets` timeout disappeared, and host Gfxstream proceeded to GPU format and blob commands. This strongly supports the UEFI→Linux GPU reset/reactivation hypothesis. The next observed failure is precise: crosvm `ResourceMapBlob` could not add GPU memory to the VM; `register_memory failed ... Bad address (os error 14)`. Guest Mesa then reported `mmap64 EINVAL`, and Vulkan enumerated zero devices (`-3`). A targeted `VulkanAllocateHostVisibleAsUdmabuf:disabled` A/B was accepted by Gfxstream but did not change the EFAULT. **Hardware acceleration is still not working.** Stop broad GPU flag sweeps; investigate the host GPU blob-memory mapping contract or seek vendor crosvm/GZVM support.
+
+The diagnostic FD SHA is `2FC8B2D2781AC215CF7A14DE8219E51B4554CAF8AF163703FCC4DF18BA3F37A7`. The generated stock FD was restored exactly to SHA `7162202A2ED14C6BE3433915CB5786D9A41E3722647E40AA3CFEF29720D14963`. The disposable Android disk was rolled back to exact P7/Gfxstream SHA `D16EE353C8D0B5AC3262073D76552ED62135A4169798EF6F43D47BCF5F7D208F` and normal GNOME fallback relaunched. GOLDEN, stock Ubuntu ISO, Windows baseline and signed Windows binaries were untouched. Full report: `docs/GPU_GFXSTREAM_RESET_BOUNDARY_2026-09-27.md`; evidence: `build-logs/gfxstream-zink-20260926/linux-first-gpu/`.
+
+## Earlier GPU boundary (superseded by first-bind A/B)
+
+The correct P7 initrd now boots GNOME with the ARM64 Gfxstream guest ICD installed. A Vulkan-device preflight avoids the previous “Oh no” crash by falling back to softpipe. Both the original Gfxstream experiment and a single `VulkanAllocateHostMemory:enabled` A/B select the host Mali Vulkan device but fail guest enumeration (`VK_ERROR_INITIALIZATION_FAILED`, zero devices). Linux's `virtio_gpu_get_capsets` times out. Host log shows Gfxstream shutdown followed immediately by `pcivirtio-gpu activate failed: worker thread missing on activate?` at the firmware→Linux GPU transition. Upstream crosvm reset/activate source matches that exact error; Samsung's source revision remains unverified. Do not randomly vary GPU flags. The next single discriminating test, when the current VM can be stopped, is a disposable firmware clone excluding only pre-boot `VirtioGpuDxe`, so Linux makes the first GPU activation. The live GNOME VM was left running. Full evidence: `docs/GPU_GFXSTREAM_RESET_BOUNDARY_2026-09-27.md`.
+
+## Current priority: hardware GPU activation
+
+Linux desktop is currently visible in U-AVF. Do not stop or restart that running session just to re-prove the display path. Keep these two facts separate:
+
+```text
+ANDROID_HOST_GFXSTREAM_GLES_ON_MALI = PASS
+LINUX_GUEST_VIRTIO_GPU_3D           = NOT_WORKING
+GNOME_RENDERER                      = SOFTPIPE
+```
+
+The current Gfxstream GLES run initialized successfully on the physical Mali-G925, and the existing 4052/WAVF path delivered valid 1920x1080 non-black Linux frames to Android. This proves the host renderer can open the device, not that guest GNOME uses it. Guest serial still reports `virtio_gpu_get_capsets: timed out waiting for cap set 0`, `LV:SOFTPIPE=ENABLED`, and `No virgl contexts available on host`; GNOME therefore remains software-rendered. Gfxstream Vulkan was separately tried once and crosvm aborted during host color-buffer allocation (`Failed to find memory type` / format 32993 at 640x480), so do not repeat that same configuration unchanged.
+
+The shortest documented Linux Gfxstream route is the **guest Vulkan ICD + Mesa Zink**, not the host-only GLES toggle: upstream crosvm's Linux guest instructions build `gfxstream-vk`, set `MESA_LOADER_DRIVER_OVERRIDE=zink` and `VK_ICD_FILENAMES`, then start a DRM compositor. Their sample ICD filename is x86_64, so an ARM64 guest artifact/build is still required. Next work should statically establish an ARM64 guest-driver build/deployment path and diagnose the recorded Vulkan host allocation failure before any new runtime. Keep the official Ubuntu ISO byte-exact; any driver overlay must be app-owned/disposable and must not replace the proven P7 platform. Evidence and exact logs: `docs/GPU_ACCELERATION_HOST_WORKER_AUDIT_2026-09-26.md` and `build-logs/gpu-hardware-audit-20260926/`.
+
+## Latest 1080p performance boundary — P31/P32, 2026-09-26
+
+```text
+GNOME_1920x1080_VISIBLE              = PASS
+GNOME_1080P30_PRESENTED_UNDER_MOTION = NOT_CONFIRMED
+P31_SMALL_WINDOW_DRAG_PRESENTED       = ~18-24 FPS, variable
+P32_GNOME_4052_ANDROID_PRESENTATION   = PASS before stream close
+P32_DIAGNOSTIC_WINDOW_CLOSE          = BRIDGE_X11_CLIENT_DISCONNECTED
+P32_VM_PROCESS                       = RUNNING at last check
+ACCESSIBILITY_GLOBAL_KEY_CAPTURE     = NOT_IMPLEMENTED
+```
+
+P31 proved the received packets are almost all drawn by Android; the guest's
+sequential X11 capture and compare/compress stages exceed the 33 ms budget
+under actual movement. P32 retained the P7 platform and stock ISO, but the
+temporary test window lacked `WM_DELETE_WINDOW`. Closing it disconnected
+the X11 client that also runs the frame bridge, ending 4052 while crosvm
+remained alive. The last Android image is stale. The user's last-launch/no-
+deletion instruction is in force: **do not restart or delete any current P32
+artifact automatically**. See
+`docs/GENERIC_UBUNTU_P31_P32_1080P_PERFORMANCE_2026-09-26.md`.
+
+## P27/P28 interactive GNOME and next display work
+
+```text
+GNOME_TOUCH_INPUT_TO_XTEST          = PASS (P27, P28)
+GNOME_BASIC_KEYBOARD_TO_XTEST       = PASS (P28)
+GNOME_CONTINUOUS_1024x768_2FPS     = PASS (P28)
+GNOME_1080P_30FPS_RUNTIME          = NOT_TESTED
+OFFICIAL_ISO_ONLY_APP_SETUP        = NOT_IMPLEMENTED
+```
+
+P27 opened the real GNOME app grid from Android touch. P28 eliminated the
+Python per-pixel conversion and measured 1.98679 frames/s for a 2 FPS target;
+the currently running VM's report reached 1,765 frames, 1,740 nonblack,
+without a disconnect. The P7 platform and official ISO are unchanged.
+The Linux launch button still uses an older generic profile; P28 is an
+explicit diagnostic launch requiring a prepared disposable combined image.
+
+Uninstalled source changes add physical mouse buttons/scroll, fix Stop VM
+selection before vsock connects, archive first visible frames, and implement
+WAVF v1 compressed keyframes plus 64-pixel changed tiles. Offline 1920x1080
+producer/decoder self-tests PASS. The bridge was repacked as P29 initrd
+(SHA `BD8C61BF...B254BD`; exactly one changed CPIO file) and materialized as
+an offline disposable P29 disk (SHA `2280A81E...4E6D0`; GPT/ISO/FAT audit
+PASS). No P29 runtime has occurred. These changes have **not** been tested on the tablet;
+the installed/running APK and P28 guest still use the older full-frame format.
+Do not claim 1080p30, full keyboard/mouse, or one-ISO setup yet. No commit or
+release until stable output/input and license choice are resolved. See
+`docs/GENERIC_UBUNTU_INTERACTIVE_P28_AND_DISPLAY_NEXT_2026-09-25.md`.
+
+## GNOME Shell visible in Android — P26
+
+```text
+GNOME_SHELL_VISIBLE_IN_APP = PASS
+WAVF_VSOCK_4052_ANDROID_SURFACEVIEW = PASS
+GNOME_FULL_DESKTOP_INTERACTIVE = NOT_TESTED
+```
+
+P25 GDB identified the isolated Xvnc GNOME Shell crash as `SIGILL` at an
+ARM SVE `index z1.s, #0, #1` instruction. P26 changed only the guest session
+renderer selection to Mesa `GALLIUM_DRIVER=softpipe` (with the existing
+`LIBGL_ALWAYS_SOFTWARE=1`). The exact P7 firmware/launcher/kernel, single-disk
+geometry, Android receiver and stock ISO remained unchanged. P26 serial shows
+`LV:SOFTPIPE=ENABLED`, `LV:XVNC_SOCKET=PASS`, `GNOME Shell started`, and
+`CRASH_FILES=0`; the previous fatal GNOME screen and SIGILL are absent.
+
+The 1024×768 GNOME Shell top bar was captured with a valid WAVF CRC over
+vsock 4052 and is visibly present in the app SurfaceView. The dark desktop
+background and lack of tested input mean this is **not** yet a claim of a
+fully interactive graphical desktop. The diagnostic VM remains running for
+inspection; the Stop button in the app can end it. The P26 candidate is
+disposable and GOLDEN/Windows baseline were not changed. See
+`docs/GENERIC_UBUNTU_GNOME_SHELL_VISIBLE_P26_2026-09-25.md`.
 
 ## GENERIC_UBUNTU — stock ISO, one-disk control
 
@@ -17,8 +189,9 @@ auto-balloon enabled, identical media repeatedly produced SquashFS failures
 and GDM's session worker failed with `Input/output error`. The internal
 mechanism remains an inference; do not call it a confirmed vendor bug yet.
 
-`GNOME_VISIBLE_IN_APP = NOT_CONFIRMED`: guest virtio-GPU DRM framebuffer
-exists, but no post-EBS frame path into the U-AVF SurfaceView is proven.
+At that 2026-09-24 checkpoint, `GNOME_VISIBLE_IN_APP` was not confirmed:
+guest virtio-GPU DRM framebuffer existed, but no post-EBS frame path into
+the U-AVF SurfaceView had been proven. P26 above supersedes this status.
 The installed APK's Linux Launch/Stop buttons now select this generic VM.
 Its final APK SHA-256 is
 `299D80A36025FEF81015B15A648DF15717BC4688CAD38B2999DBF7A1A0058374`;
