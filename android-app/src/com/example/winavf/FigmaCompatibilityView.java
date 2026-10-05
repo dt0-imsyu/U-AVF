@@ -11,8 +11,8 @@ import android.widget.ProgressBar;
 /** Figma294:41/80. Each result comes from the caller's actual probe evidence. */
 final class FigmaCompatibilityView extends FigmaCanvas {
     FigmaCompatibilityView(Context context,boolean running,boolean passed,int completed,String[] results,
-            String boot,String vsock,String graphics,Runnable repeat,Runnable proceed,Runnable back,Runnable share) {
-        super(context,"create-background.png",false);
+            String boot,String vsock,String graphics,Runnable repeat,Runnable proceed,Runnable back,Runnable share,Runnable skip) {
+        super(context,"create-background.png",false,1460);
         header(running?"Checking this device":"Compatibility test",running?"Testing the capabilities needed to run U-AVF.":passed?"Launch prerequisites verified. Runtime checks are shown separately.":"Some requirements need attention.","← Back",back);
         if(running || !passed) {
             String[] labels={"Android / ARM64","Android Virtualization Framework","Custom VM permissions","Platform integrity"};
@@ -34,7 +34,10 @@ final class FigmaCompatibilityView extends FigmaCanvas {
             progress.setIndeterminate(running);progress.setMax(labels.length);progress.setProgress(completed);
             progress.setIndeterminateTintList(ColorStateList.valueOf(0xff38d185));progress.setProgressTintList(ColorStateList.valueOf(0xff38d185));widget(progress,420,1120,1720,24);
             text(running?(completed<labels.length?"Checking: "+labels[Math.min(completed,labels.length-1)]:"Saving results…"):"Read the results above, then retry.",420,1180,1720,65,28,0xffa7b6c3,false,Gravity.CENTER_VERTICAL);
-            if(!running)button("Run again",1120,1290,970,100,30,0xff05140f,0xff38d185,0xff38d185,26,repeat);
+            if(!running) {
+                button("Run again",1120,1290,970,100,30,0xff05140f,0xff38d185,0xff38d185,26,repeat);
+                button("Skip test…",420,1290,650,100,28,0xffa7b6c3,0xfa15202b,0xe62a3b4d,26,skip);
+            }
         } else {
             asset("setup-glow-depth.png",759,249,950,950);
             asset("compat-circle.png",500,440,410,410);

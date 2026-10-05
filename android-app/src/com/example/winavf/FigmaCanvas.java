@@ -32,13 +32,16 @@ class FigmaCanvas extends ViewGroup {
         }
     }
     FigmaCanvas(Context context,String background,boolean home) {
+        this(context,background,home,1340);
+    }
+    FigmaCanvas(Context context,String background,boolean home,float noticeY) {
         super(context);setBackgroundColor(0xff070a0f);setClipChildren(true);
         regular=ProductFont.load(context);medium=Typeface.create(regular,500,false);
         // Product-wide Setup scene; keep each page's controls and truthful state.
         widget(new FigmaProductBackdrop(context),0,0,2560,1600);
         asset("logo.png",150,105,120,162);
         shape(151,89,520,6,0xe634e38b,0,3);shape(679,89,150,6,0xa659b8ff,0,3);
-        notice=text("",430,1340,1700,96,26,0xffa7b6c3,false,Gravity.CENTER_VERTICAL);
+        notice=text("",430,noticeY,1700,96,26,0xffa7b6c3,false,Gravity.CENTER_VERTICAL);
     }
     final void header(String title,String subtitle,String back,Runnable backAction) {
         text(title,360,119,1760,113,76,0xfaf4f7fa,true,Gravity.CENTER_VERTICAL);

@@ -13,13 +13,16 @@ $qaArgs=@()
 if($QaIsolated){$qaArgs=@('--qa-isolated')}
 & $python (Join-Path $root '..\tools\release\assemble-release-base.py') --base $BaseApk --output $OutputDir --aapt2 "$bt\aapt2.exe" --android-jar $androidJar --version-name $VersionName --version-code $VersionCode @qaArgs
 if($LASTEXITCODE -ne 0){throw 'Release base failed'}
+& $python (Join-Path $root '..\tools\release\generate-platform-integrity.py') --apk "$OutputDir\unsigned.apk" --generated "$OutputDir\generated"
+if($LASTEXITCODE -ne 0){throw 'Packaged platform integrity generation failed'}
 New-Item -ItemType Directory -Path "$OutputDir\classes","$OutputDir\dex" | Out-Null
 $sources=@(Get-ChildItem "$root\src" -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)+@(Get-ChildItem "$OutputDir\generated" -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)
 & "$java\javac.exe" -source 17 -target 17 -classpath $androidJar -d "$OutputDir\classes" $sources
 if($LASTEXITCODE -ne 0){throw 'Release javac failed'}
 $env:JAVA_HOME=Split-Path -Parent $java
-$classes=@(Get-ChildItem "$OutputDir\classes" -Recurse -Filter '*.class' | Select-Object -ExpandProperty FullName)
-& "$bt\d8.bat" --min-api 36 --lib $androidJar --output "$OutputDir\dex" $classes
+& "$java\jar.exe" cf "$OutputDir\classes.jar" -C "$OutputDir\classes" .
+if($LASTEXITCODE -ne 0){throw 'Release class archive failed'}
+& "$bt\d8.bat" --min-api 36 --lib $androidJar --output "$OutputDir\dex" "$OutputDir\classes.jar"
 if($LASTEXITCODE -ne 0){throw 'Release dex failed'}
 & "$java\jar.exe" uf "$OutputDir\unsigned.apk" -C "$OutputDir\dex" classes.dex
 if($LASTEXITCODE -ne 0){throw 'Release dex packaging failed'}

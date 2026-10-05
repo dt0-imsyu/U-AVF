@@ -1,7 +1,11 @@
 # U-AVF
 
 Non-root Ubuntu Desktop ARM64 on Android Virtualization Framework.
-[Download U-AVF 1.0](https://github.com/dt0-imsyu/U-AVF/releases/tag/v1.0.0).
+[Download U-AVF 1.0.1](https://github.com/dt0-imsyu/U-AVF/releases/tag/v1.0.1).
+
+1.0.1 fixes a false platform-integrity failure, compatibility-screen overlap and missing Skip test action. Existing workspaces are preserved. [Hotfix details](docs/release-preparation/RELEASE_1.0.1.md).
+
+1.0.1 исправляет ложную ошибку целостности платформы, наложение кнопки на сообщение и отсутствие Skip test. Существующие workspace сохраняются. [Подробности обновления](docs/release-preparation/RELEASE_1.0.1.md).
 
 ## Screenshots / Скриншоты
 

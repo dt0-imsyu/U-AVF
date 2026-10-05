@@ -1691,12 +1691,22 @@ public final class MainActivity extends Activity {
          canvas=new FigmaCompatibilityView(this,this.compatibilityRunning,this.compatibilityPassed,
             this.readinessCompleted,this.readinessResults.clone(),boot,vsock,graphics,
             this::beginCompatibilityCheck,()->this.renderProductScreen(ProductScreen.MODE_SELECTION),
-            ()->this.renderProductScreen(ProductScreen.ONBOARDING),this::shareCompatibilityReport);
+            ()->this.renderProductScreen(ProductScreen.ONBOARDING),this::shareCompatibilityReport,this::skipCompatibilityCheck);
       }
       this.productStatus=canvas.notice;this.homePanel.addView(canvas,new FrameLayout.LayoutParams(-1,-1));
       if(pageChanged && android.animation.ValueAnimator.areAnimatorsEnabled()) {
          canvas.setTranslationY(this.dp(12));canvas.animate().translationY(0).setDuration(220).setInterpolator(new DecelerateInterpolator()).start();
       }
+   }
+
+   private void skipCompatibilityCheck() {
+      if(this.compatibilityRunning)return;
+      ProductDialog.show(this,"Skip compatibility test?",
+         "This device will remain unverified. You can open the dashboard and repeat the test from Diagnostics. Required VM permissions and image integrity checks still apply.",
+         "Continue unverified",false,()-> {
+            this.getPreferences(0).edit().putBoolean("first_run_complete",true).apply();
+            this.renderProductScreen(ProductScreen.MODE_SELECTION);
+         });
    }
 
    private void shareCompatibilityReport() {
@@ -3384,10 +3394,9 @@ public final class MainActivity extends Activity {
       String var12 = "PASS";
 
       try {
-         this.verifyBundledAsset(UBUNTU_INSTALL_PLATFORM_PREFIX_ASSET, 134217728L, UBUNTU_INSTALL_PLATFORM_PREFIX_SHA256);
-         this.verifyBundledAsset(FRAME_BRIDGE_VIRGL_GBM_LINUX_FIRST_PREFIX_ASSET, 134217728L, FRAME_BRIDGE_VIRGL_GBM_LINUX_FIRST_PREFIX_SHA256);
-         this.verifyBundledAsset("p7-platform-prefix-virgl-gbm-linux-first-cu120-xdamage-real-gnome.img", 134217728L, "3998BD2D742B0CE075B5F132698319A6E584EBAAD83E000FB23FE786A88CD8E1");
-         this.verifyBundledAsset("p33-gpt-trailer.bin", 16896L, "A0F9379853E2BD1CD9FF2854113CCB971B8A2A236C7C7A0736983EAA427C861B");
+         for(String asset:BundledPlatformAssets.NAMES) {
+            this.verifyBundledAsset(asset,BundledPlatformAssets.size(asset),BundledPlatformAssets.sha256(asset));
+         }
       } catch (Throwable var20) {
          var11 = false;
          var12 = rootMessage(var20);
@@ -3660,7 +3669,9 @@ public final class MainActivity extends Activity {
          this.selectedProfile = MainActivity.LaunchProfile.LINUX;
       }
 
-      this.compatibilityPassed = this.getPreferences(0).getInt("compatibility_check_schema",0)==2 && this.getPreferences(0).getBoolean("compatibility_passed", false);
+      this.compatibilityPassed = this.getPreferences(0).getInt("compatibility_check_schema",0)==2
+         && Build.FINGERPRINT.equals(this.getPreferences(0).getString("compatibility_checked_build",""))
+         && this.getPreferences(0).getBoolean("compatibility_passed", false);
       if(this.getPreferences(0).getInt("compatibility_check_schema",0)==2 && Build.FINGERPRINT.equals(this.getPreferences(0).getString("compatibility_checked_build",""))) {
          for(int i=0;i<this.readinessResults.length;i++)this.readinessResults[i]=this.getPreferences(0).getString("compatibility_result_"+i,"Not checked");
          this.readinessCompleted=this.readinessResults.length;
@@ -5075,7 +5086,7 @@ public final class MainActivity extends Activity {
                }
 
                if (var6 && var14.isFile() && var14.length() == 4102029312L) {
-                  String var17 = var4 ? "3998BD2D742B0CE075B5F132698319A6E584EBAAD83E000FB23FE786A88CD8E1" : "925979C0DDF0A36CFC8BC756844D2CA341E4ED8B2B30906B0ED8ADCEE90CD978";
+                  String var17 = var4 ? BundledPlatformAssets.sha256("p7-platform-prefix-virgl-gbm-linux-first-cu120-xdamage-real-gnome.img") : "925979C0DDF0A36CFC8BC756844D2CA341E4ED8B2B30906B0ED8ADCEE90CD978";
                   String var18 = var4 ? "p7-platform-prefix-virgl-gbm-linux-first-cu120-xdamage-real-gnome.img" : "p7-platform-prefix-virgl-gbm-linux-first-cu120-xdamage-composite-overlay.img";
                   if (var17.equals(hex(sha256FilePrefix(var14, var8))) && this.matchesVirglGbmDiskParts(var14, var8)) {
                      try {

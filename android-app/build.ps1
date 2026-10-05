@@ -94,11 +94,14 @@ $resources = Join-Path $out 'resources.zip'
 if ($LASTEXITCODE -ne 0) { throw 'resource compilation failed' }
 & (Join-Path $buildTools 'aapt2.exe') link -I $androidJar --manifest (Join-Path $root 'AndroidManifest.xml') -A $packageAssets --auto-add-overlay -R $resources --java $generated --min-sdk-version 36 --target-sdk-version 36 -o (Join-Path $out 'unsigned.apk')
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
+& python (Join-Path $root '..\tools\release\generate-platform-integrity.py') --apk (Join-Path $out 'unsigned.apk') --generated $generated
+if ($LASTEXITCODE -ne 0) { throw 'Packaged platform integrity generation failed' }
 $sources = @(Get-ChildItem (Join-Path $root 'src') -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName) + @(Get-ChildItem $generated -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)
 & (Join-Path $javaBin 'javac.exe') -source 17 -target 17 -classpath $androidJar -d (Join-Path $out 'classes') $sources
 if ($LASTEXITCODE -ne 0) { throw 'javac failed' }
-$classes = Get-ChildItem (Join-Path $out 'classes') -Recurse -Filter '*.class' | Select-Object -ExpandProperty FullName
-& (Join-Path $buildTools 'd8.bat') --min-api 36 --lib $androidJar --output (Join-Path $out 'dex') $classes
+& (Join-Path $javaBin 'jar.exe') cf (Join-Path $out 'classes.jar') -C (Join-Path $out 'classes') .
+if ($LASTEXITCODE -ne 0) { throw 'class archive failed' }
+& (Join-Path $buildTools 'd8.bat') --min-api 36 --lib $androidJar --output (Join-Path $out 'dex') (Join-Path $out 'classes.jar')
 if ($LASTEXITCODE -ne 0) { throw 'd8 failed' }
 & (Join-Path $javaBin 'jar.exe') uf (Join-Path $out 'unsigned.apk') -C (Join-Path $out 'dex') classes.dex
 if ($LASTEXITCODE -ne 0) { throw 'APK packaging failed' }
