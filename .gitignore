@@ -10,3 +10,4 @@ Build/
 build-logs/
 **/__pycache__/
 *.pyc
+firestore-debug.log

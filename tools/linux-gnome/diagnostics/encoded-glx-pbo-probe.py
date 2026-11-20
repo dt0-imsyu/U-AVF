@@ -270,7 +270,8 @@ void main(){
             return (pixel>>16)&255,(pixel>>8)&255,pixel&255
         finally: destroy_image(image)
     checks=[(width.value*i//7,height.value*j//5) for i,j in [(1,1),(2,2),(3,3),(4,1),(5,2),(6,4)]]
-    if consumer and (width.value,height.value)!=(1920,1200): raise RuntimeError('Streaming requires exact1920x1200')
+    if consumer and (width.value,height.value)!=globals().get('expected_stream_size',(1920,1200)):
+        raise RuntimeError('X11 geometry differs from the negotiated capture size')
     deadline=float('inf') if persistent else time.monotonic()+35
     import itertools
     indices=itertools.count() if persistent else range(100000 if consumer else 12)

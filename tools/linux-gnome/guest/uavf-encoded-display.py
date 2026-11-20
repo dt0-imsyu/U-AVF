@@ -10,6 +10,7 @@ import importlib.util
 import os
 from pathlib import Path
 import pwd
+import re
 import runpy
 import select
 import signal
@@ -61,14 +62,36 @@ stop=threading.Event()
 for sig in (signal.SIGTERM,signal.SIGINT): signal.signal(sig,lambda *_:stop.set())
 stream=socket.socket(fileno=os.dup(0))
 stream.settimeout(2)
-def header(kind,sequence,length=0,stamp=0):
-    return struct.pack('<4sHHIIIHHQII',b'UVF1',1,kind,1,1,sequence,1920,1200,stamp,length,0)
-stream.sendall(header(4,0))
+DISPLAY_SIZES={(1280,800),(1920,1080),(1920,1200)}
+SIZE_REPLY=struct.Struct('<4sHH')
+width,height=1920,1200
+def header(kind,sequence,length=0,stamp=0,flags=0):
+    return struct.pack('<4sHHIIIHHQII',b'UVF1',1,kind,1,1,sequence,width,height,stamp,length,flags)
+stream.sendall(header(4,0,flags=int.from_bytes(b'SIZE','little')))
 reply=bytearray()
 while len(reply)<8:
     part=stream.recv(8-len(reply))
     if not part: raise EOFError('No clock handshake')
     reply.extend(part)
+
+def requested_display_size():
+    # Legacy Android replies with only the timestamp. Do not consume UIN1
+    # input queued by a legacy host, or wait indefinitely for the extension.
+    deadline=time.monotonic()+0.5
+    while time.monotonic()<deadline:
+        if not select.select([stream],[],[],max(0,deadline-time.monotonic()))[0]:
+            break
+        data=stream.recv(SIZE_REPLY.size,socket.MSG_PEEK)
+        if not data or not b'SIZE'.startswith(data[:min(4,len(data))]):
+            break
+        if len(data)==SIZE_REPLY.size:
+            _,w,h=SIZE_REPLY.unpack(stream.recv(SIZE_REPLY.size,socket.MSG_WAITALL))
+            if (w,h) not in DISPLAY_SIZES: raise RuntimeError('Rejected UVF1 display size')
+            return w,h
+        time.sleep(0.005)
+    return 1920,1200
+
+requested_size=requested_display_size()
 # The handshake precedes input publication on Android: no UIN1 bytes can be
 # mistaken for the clock response. Input keeps the proven blocking stdin reader;
 # outgoing video uses MSG_DONTWAIT with a total 2-second deadline independently.
@@ -91,18 +114,32 @@ if not ctypes.CDLL('libX11.so.6').XInitThreads():
     raise RuntimeError('Xlib thread initialization failed')
 threading.Thread(target=read_input,daemon=True,name='uavf-input').start()
 
-# Set only the authenticated session's display mode. No firmware/ISO change.
-modes=subprocess.check_output(['xrandr','--current'],text=True)
-output=next(line.split()[0] for line in modes.splitlines() if ' connected' in line)
-subprocess.run(['xrandr','--output',output,'--mode','1920x1200'],check=True)
-until=time.monotonic()+5
-while 'current 1920 x 1200' not in subprocess.check_output(['xrandr','--current'],text=True).splitlines()[0]:
-    if time.monotonic()>until: raise RuntimeError('1920x1200 mode not ready')
-    time.sleep(.1)
+# Apply only an advertised mode in the authenticated X11 session. If the
+# requested mode is absent, report the actual supported mode in each AU.
+def current_geometry(modes):
+    current=re.search(r'current (\d+) x (\d+)',modes.splitlines()[0])
+    if not current: raise RuntimeError('X11 did not report screen geometry')
+    return tuple(map(int,current.groups()))
+
+modes=subprocess.check_output(['xrandr','--current'],text=True,timeout=5)
+outputs=re.split(r'(?m)(?=^\S+ (?:dis)?connected\b)',modes)
+output=next(section for section in outputs if ' connected primary' in section.splitlines()[0]
+            or ' connected ' in section.splitlines()[0])
+supported=set(re.findall(r'(?m)^\s+(\d+x\d+)\s',output))
+desired='%dx%d'%requested_size
+if desired in supported and current_geometry(modes)!=requested_size:
+    subprocess.run(['xrandr','--output',output.split()[0],'--mode',desired],check=True,timeout=5)
+    modes=subprocess.check_output(['xrandr','--current'],text=True,timeout=5)
+width,height=current_geometry(modes)
+if (width,height) not in DISPLAY_SIZES:
+    if '1920x1200' not in supported: raise RuntimeError('No supported UVF1 screen geometry')
+    subprocess.run(['xrandr','--output',output.split()[0],'--mode','1920x1200'],check=True,timeout=5)
+    width,height=current_geometry(subprocess.check_output(['xrandr','--current'],text=True,timeout=5))
+    if (width,height) not in DISPLAY_SIZES: raise RuntimeError('No supported UVF1 screen geometry')
 
 pipeline=Gst.parse_launch(
     'appsrc name=source is-live=true format=time block=false max-buffers=1 leaky-type=downstream '
-    '! video/x-raw,format=I420,width=1920,height=1200,framerate=0/1,colorimetry=bt601 '
+    f'! video/x-raw,format=I420,width={width},height={height},framerate=0/1,colorimetry=bt601 '
     '! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream '
     '! x264enc name=encoder tune=zerolatency speed-preset=ultrafast threads=4 '
     'sliced-threads=true byte-stream=true key-int-max=60 pass=qual quantizer=25 bitrate=32000 '
@@ -155,6 +192,7 @@ def capture():
     try:
         result=runpy.run_path(str(HERE/'uavf-encoded-capture.py'),init_globals={
             'frame_consumer':captured,'stream_stop_event':stop,
+            'expected_stream_size':(width,height),
             'damage_sync':True,'async_readback':True,'persistent_stream':True})
         print('ENCODED_CAPTURE_END='+str(result.get('report')),file=sys.stderr,flush=True)
     finally: stop.set()
@@ -162,7 +200,7 @@ def capture():
 pipeline.set_state(Gst.State.PLAYING)
 worker=threading.Thread(target=capture,name='uavf-gpu-capture')
 worker.start()
-print('ENCODED_RUNTIME_READY=GPU_I420_X264_UVF1_1920x1200_INPUT_UIN1',file=sys.stderr,flush=True)
+print(f'ENCODED_RUNTIME_READY=GPU_I420_X264_UVF1_{width}x{height}_INPUT_UIN1',file=sys.stderr,flush=True)
 try:
     previous=dict(counts); before=time.monotonic()
     while not stop.wait(5):

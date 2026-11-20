@@ -68,6 +68,9 @@ for name in uavf-clipboard.py uavf-clipboard.socket uavf-clipboard@.service \
 done
 [ -s /usr/local/share/uavf-licenses/TIGERVNC_X0_COPYRIGHT ] || fail SCRAPER_LICENSE_MISSING
 [ -s /run/winavf-frame-bridge.py ] || fail FRAME_BRIDGE_MISSING
+if [ -e /usr/local/lib/uavf-installer/mavk-installed-addon.tar.gz ]; then
+  sh /usr/local/sbin/stage-uavf-installer-mavk.sh --verify || fail MAVK_ADDON_VERIFICATION
+fi
 say PASS_RUNTIME_PAYLOAD_READY
 say PASS_EXACT_GPT_GEOMETRY_AND_PROTECTED_MEDIA
 # Subiquity reloads /autoinstall.yaml after early-commands. Preserve the

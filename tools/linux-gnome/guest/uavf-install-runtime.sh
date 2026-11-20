@@ -13,6 +13,16 @@ say() {
   printf '%s\n' "$line" >/dev/console 2>/dev/null || true
 }
 
+stage_mavk() {
+  if [ -e /usr/local/lib/uavf-installer/mavk-installed-addon.tar.gz ]; then
+    if ! sh /usr/local/sbin/stage-uavf-installer-mavk.sh --stage; then
+      say MAVK_ADDON_STAGE_FAILED
+      return 1
+    fi
+    say MAVK_ADDON_STAGED
+  fi
+}
+
 if [ "${1:-}" != '--installer-complete' ]; then
   say LATE_COMMAND_ONLY
   exit 64
@@ -79,6 +89,7 @@ ACCOUNT_PY
           if [ -s /usr/local/sbin/stage-uavf-encoded-runtime.sh ]; then
             sh /usr/local/sbin/stage-uavf-encoded-runtime.sh /usr/local/lib/uavf-encoded-payload "$target"
           fi
+          stage_mavk
           say RUNTIME_V5_ALREADY_PRESENT
           exit 0
         fi
@@ -513,6 +524,7 @@ EOF
         ln -sfn ../uavf-session-journal-follow.service \
           "$target/etc/systemd/system/graphical.target.wants/uavf-session-journal-follow.service"
 
+        stage_mavk
         tmp="$staged.tmp.$$"
         printf 'version=5\naccount_policy=installer\nframe_port=4052\nready_port=4051\naudio=%s\n' \
           "$audio_status" > "$tmp"

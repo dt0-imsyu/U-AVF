@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [string] $OutputDir = ''
+    [string] $OutputDir = '',
+    [string] $MavkRuntimeDir = '',
+    [string] $MavkNativeLibrary = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +20,24 @@ New-Item -ItemType Directory -Force -Path $out, (Join-Path $out 'classes'), (Joi
 $packageAssets = Join-Path $out ('apk-assets-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 New-Item -ItemType Directory -Force -Path $packageAssets | Out-Null
 $appAssets = Join-Path $root 'assets'
+if ([bool]$MavkRuntimeDir -ne [bool]$MavkNativeLibrary) {
+    throw 'Mavk Live payload and matching native renderer must be supplied together'
+}
+if ($MavkRuntimeDir) {
+    $mavkManifestPath = Join-Path $MavkRuntimeDir 'uavf-mavk-runtime.json'
+    $mavkManifest = Get-Content -LiteralPath $mavkManifestPath -Raw | ConvertFrom-Json
+    $mavkPrefix = Join-Path $MavkRuntimeDir 'p7-platform-prefix-mavk-live.img'
+    if ($mavkManifest.codec_version -ne 3 -or $mavkManifest.prefix_bytes -ne 134217728 -or
+        $mavkManifest.prefix_asset -ne 'p7-platform-prefix-mavk-live.img' -or
+        $mavkManifest.base_sha256 -ne 'FE451CA13834DC5EDE3096EDC3AF1EF2894BFDECAA7801CED9E69EDB07447858' -or
+        (Get-Item -LiteralPath $mavkPrefix).Length -ne 134217728 -or
+        (Get-FileHash -LiteralPath $mavkPrefix -Algorithm SHA256).Hash -ne $mavkManifest.prefix_sha256) {
+        throw 'Mavk Live payload contract/hash mismatch'
+    }
+    if (-not (Test-Path -LiteralPath $MavkNativeLibrary -PathType Leaf)) { throw 'Mavk native renderer missing' }
+    Copy-Item -LiteralPath $mavkPrefix -Destination $packageAssets
+    Copy-Item -LiteralPath $mavkManifestPath -Destination $packageAssets
+}
 if (Test-Path -LiteralPath $appAssets) {
     # Ship only the user-facing Linux paths: the validated temporary VirGL
     # profile and the guided-install platform. Keep diagnostic A/B images in
@@ -96,9 +116,8 @@ if ($LASTEXITCODE -ne 0) { throw 'resource compilation failed' }
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
 & python (Join-Path $root '..\tools\release\generate-platform-integrity.py') --apk (Join-Path $out 'unsigned.apk') --generated $generated
 if ($LASTEXITCODE -ne 0) { throw 'Packaged platform integrity generation failed' }
-$sources = @(Get-ChildItem (Join-Path $root 'src') -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName) + @(Get-ChildItem $generated -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)
-& (Join-Path $javaBin 'javac.exe') -source 17 -target 17 -classpath $androidJar -d (Join-Path $out 'classes') $sources
-if ($LASTEXITCODE -ne 0) { throw 'javac failed' }
+$generatedJava = @(Get-ChildItem $generated -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)
+& (Join-Path $root 'compile-java.ps1') -Javac (Join-Path $javaBin 'javac.exe') -AndroidJar $androidJar -ClassesDir (Join-Path $out 'classes') -GeneratedSources $generatedJava
 & (Join-Path $javaBin 'jar.exe') cf (Join-Path $out 'classes.jar') -C (Join-Path $out 'classes') .
 if ($LASTEXITCODE -ne 0) { throw 'class archive failed' }
 & (Join-Path $buildTools 'd8.bat') --min-api 36 --lib $androidJar --output (Join-Path $out 'dex') (Join-Path $out 'classes.jar')
@@ -111,6 +130,11 @@ New-Item -ItemType Directory -Force -Path $nativeDir | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Native WAVF decoder compilation failed' }
 & (Join-Path $javaBin 'jar.exe') uf (Join-Path $out 'unsigned.apk') -C (Join-Path $out 'native-package') lib/arm64-v8a/libwavf.so
 if ($LASTEXITCODE -ne 0) { throw 'Native WAVF decoder packaging failed' }
+if ($MavkRuntimeDir) {
+    Copy-Item -LiteralPath $MavkNativeLibrary -Destination (Join-Path $nativeDir 'libmavk_runtime_probe.so') -Force
+    & (Join-Path $javaBin 'jar.exe') uf (Join-Path $out 'unsigned.apk') -C (Join-Path $out 'native-package') lib/arm64-v8a/libmavk_runtime_probe.so
+    if ($LASTEXITCODE -ne 0) { throw 'Mavk native renderer packaging failed' }
+}
 $keystore = Join-Path $env:USERPROFILE '.android\debug.keystore'
 if (-not (Test-Path $keystore)) { throw "Missing established signing key: $keystore" }
 & (Join-Path $buildTools 'zipalign.exe') -f -P 16 4 (Join-Path $out 'unsigned.apk') (Join-Path $out 'aligned.apk')

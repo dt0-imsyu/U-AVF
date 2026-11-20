@@ -1,24 +1,40 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$BaseApk,[Parameter(Mandatory)][string]$OutputDir,
-      [string]$VersionName='1.0',[int]$VersionCode=14,[switch]$QaIsolated)
+      [string]$VersionName='1.0',[int]$VersionCode=14,[switch]$QaIsolated,
+      [string]$MavkRuntimeDir='',[string]$MavkNativeLibrary='',[switch]$RequireUbuntuDesktopChoices,
+      [string]$WindowsDisplayBroker='',[string]$WindowsSetupFatLibrary='',[string]$WindowsGuidedProfile='',
+      [string]$WindowsIsoLibrary='',[string]$UdfreadLibrary='',
+      [string]$JdkDir=$env:JAVA_HOME,[string]$SdkDir=$env:ANDROID_HOME,[string]$Python='python')
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
-$java='C:\Program Files\Android\Android Studio\jbr\bin'
-$sdk=Join-Path $env:LOCALAPPDATA 'Android\Sdk'
-$bt=Join-Path $sdk 'build-tools\36.0.0'
-$androidJar=Join-Path $sdk 'platforms\android-36\android.jar'
-$python='C:\Users\denis\AppData\Local\Programs\Python\Python314\python.exe'
+if (-not $JdkDir) { $JdkDir = Join-Path $env:ProgramFiles 'Android\Android Studio\jbr' }
+if (-not $SdkDir) { $SdkDir = Join-Path $env:LOCALAPPDATA 'Android\Sdk' }
+$java=Join-Path $JdkDir 'bin'
+$bt=Join-Path $SdkDir 'build-tools\36.0.0'
+$androidJar=Join-Path $SdkDir 'platforms\android-36\android.jar'
+foreach ($tool in @("$java\javac.exe", "$java\jar.exe", "$java\keytool.exe", "$bt\aapt2.exe",
+        "$bt\d8.bat", "$bt\zipalign.exe", "$bt\apksigner.bat", $androidJar)) {
+    if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Missing Android build dependency: $tool" }
+}
+Get-Command $Python -CommandType Application -ErrorAction Stop | Out-Null
 if(Test-Path -LiteralPath $OutputDir){throw 'Fresh output directory required'}
 $qaArgs=@()
 if($QaIsolated){$qaArgs=@('--qa-isolated')}
+if($RequireUbuntuDesktopChoices){$qaArgs+=@('--require-ubuntu-desktop-choices')}
+if([bool]$MavkRuntimeDir -ne [bool]$MavkNativeLibrary){throw 'Mavk guest and host must be supplied together'}
+if($MavkRuntimeDir){$qaArgs+=@('--mavk-runtime-dir',$MavkRuntimeDir,'--mavk-native-library',$MavkNativeLibrary)}
+if([bool]$WindowsDisplayBroker -ne [bool]$WindowsSetupFatLibrary){throw 'Windows display broker and matching FAT library must be supplied together'}
+if($WindowsDisplayBroker){$qaArgs+=@('--windows-display-broker',$WindowsDisplayBroker,'--windows-setup-fat-library',$WindowsSetupFatLibrary)}
+if($WindowsGuidedProfile){$qaArgs+=@('--windows-guided-profile',$WindowsGuidedProfile)}
+if($WindowsIsoLibrary){$qaArgs+=@('--windows-iso-library',$WindowsIsoLibrary)}
+if($UdfreadLibrary){$qaArgs+=@('--udfread-library',$UdfreadLibrary)}
 & $python (Join-Path $root '..\tools\release\assemble-release-base.py') --base $BaseApk --output $OutputDir --aapt2 "$bt\aapt2.exe" --android-jar $androidJar --version-name $VersionName --version-code $VersionCode @qaArgs
 if($LASTEXITCODE -ne 0){throw 'Release base failed'}
 & $python (Join-Path $root '..\tools\release\generate-platform-integrity.py') --apk "$OutputDir\unsigned.apk" --generated "$OutputDir\generated"
 if($LASTEXITCODE -ne 0){throw 'Packaged platform integrity generation failed'}
 New-Item -ItemType Directory -Path "$OutputDir\classes","$OutputDir\dex" | Out-Null
-$sources=@(Get-ChildItem "$root\src" -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)+@(Get-ChildItem "$OutputDir\generated" -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)
-& "$java\javac.exe" -source 17 -target 17 -classpath $androidJar -d "$OutputDir\classes" $sources
-if($LASTEXITCODE -ne 0){throw 'Release javac failed'}
+$generatedJava = @(Get-ChildItem "$OutputDir\generated" -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)
+& (Join-Path $root 'compile-java.ps1') -Javac "$java\javac.exe" -AndroidJar $androidJar -ClassesDir "$OutputDir\classes" -GeneratedSources $generatedJava
 $env:JAVA_HOME=Split-Path -Parent $java
 & "$java\jar.exe" cf "$OutputDir\classes.jar" -C "$OutputDir\classes" .
 if($LASTEXITCODE -ne 0){throw 'Release class archive failed'}

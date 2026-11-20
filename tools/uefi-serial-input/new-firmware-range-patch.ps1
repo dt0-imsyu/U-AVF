@@ -28,6 +28,19 @@ function Bytes([string] $Hex) {
   return ,$value
 }
 function Write-Bytes([IO.Stream] $Stream, [byte[]] $Value) { $Stream.Write($Value, 0, $Value.Length) }
+function Sha256([byte[]] $Value) {
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try { return $algorithm.ComputeHash($Value) } finally { $algorithm.Dispose() }
+}
+function Hex([byte[]] $Value) {
+  return (($Value | ForEach-Object { $_.ToString('X2') }) -join '')
+}
+function Bytes-Equal([byte[]] $Left, [byte[]] $Right) {
+  if ($Left.Length -ne $Right.Length) { return $false }
+  $difference = 0
+  for ($index = 0; $index -lt $Left.Length; ++$index) { $difference = $difference -bor ($Left[$index] -bxor $Right[$index]) }
+  return ($difference -eq 0)
+}
 
 $raw = (Resolve-Path -LiteralPath $BaselineRaw).Path
 $fd = (Resolve-Path -LiteralPath $FirmwareFd).Path
@@ -40,9 +53,9 @@ $old = New-Object byte[] $length
 $reader = [IO.File]::OpenRead($raw)
 try { $reader.Seek($offset, [IO.SeekOrigin]::Begin) | Out-Null; Read-Exactly $reader $old } finally { $reader.Dispose() }
 $new = [IO.File]::ReadAllBytes($fd)
-$oldHash = [Security.Cryptography.SHA256]::HashData($old)
-$newHash = [Security.Cryptography.SHA256]::HashData($new)
-if ([Security.Cryptography.CryptographicOperations]::FixedTimeEquals($old, $new)) { throw 'New FD is byte-identical to baseline range.' }
+$oldHash = Sha256 $old
+$newHash = Sha256 $new
+if (Bytes-Equal $old $new) { throw 'New FD is byte-identical to baseline range.' }
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PatchPath) | Out-Null
 $writer = [IO.BinaryWriter]::new([IO.File]::Open($PatchPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None), [Text.Encoding]::ASCII, $false)
@@ -59,13 +72,13 @@ try {
 # In-memory forward/reverse simulation; this is the exact range the launcher
 # will authenticate before it writes and again before it rolls back.
 $simulated = [byte[]]$old.Clone(); [Array]::Copy($new, $simulated, $length)
-if (-not [Security.Cryptography.CryptographicOperations]::FixedTimeEquals([Security.Cryptography.SHA256]::HashData($simulated), $newHash)) { throw 'Forward simulation failed.' }
+if (-not (Bytes-Equal (Sha256 $simulated) $newHash)) { throw 'Forward simulation failed.' }
 [Array]::Copy($old, $simulated, $length)
-if (-not [Security.Cryptography.CryptographicOperations]::FixedTimeEquals([Security.Cryptography.SHA256]::HashData($simulated), $oldHash)) { throw 'Rollback simulation failed.' }
+if (-not (Bytes-Equal (Sha256 $simulated) $oldHash)) { throw 'Rollback simulation failed.' }
 
 $report = @(
   'RESULT=PASS', "BASELINE_SHA256=$baselineHash", "OFFSET=$offset", "LENGTH=$length",
-  "BEFORE_SHA256=$([Convert]::ToHexString($oldHash))", "AFTER_SHA256=$([Convert]::ToHexString($newHash))",
+  "BEFORE_SHA256=$(Hex $oldHash)", "AFTER_SHA256=$(Hex $newHash)",
   "PATCH_SHA256=$((Get-FileHash -LiteralPath $PatchPath -Algorithm SHA256).Hash)",
   "PATCH_BYTES=$((Get-Item -LiteralPath $PatchPath).Length)", 'FORWARD_SIMULATION=PASS', 'ROLLBACK_SIMULATION=PASS'
 )

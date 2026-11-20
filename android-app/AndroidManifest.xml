@@ -20,6 +20,8 @@
          Linux image directly into app-private storage, avoiding a second 9 GiB
          external staging copy.  Remove this before any production release. -->
     <application android:debuggable="true" android:icon="@drawable/ic_uavf_brand" android:label="U-AVF" android:theme="@android:style/Theme.Material.NoActionBar">
+        <service android:name=".MavkDisplayService" android:exported="false"
+            android:process=":mavk" android:stopWithTask="false" />
         <service android:name=".VmRuntimeService" android:exported="false"
             android:foregroundServiceType="specialUse" android:stopWithTask="false">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

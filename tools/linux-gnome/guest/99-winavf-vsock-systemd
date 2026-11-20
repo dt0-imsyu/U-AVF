@@ -22,6 +22,21 @@ else
   echo 'LV:GDM_XORG=CONFIG_NOT_FOUND' >/dev/console
 fi
 mkdir -p /run/systemd/system/sockets.target.wants
+if [ -e /usr/local/lib/uavf-installer/mavk-installed-addon.tar.gz ]; then
+  rootfs="${rootmnt:-/root}"
+  mkdir -p "$rootfs/usr/local/lib/uavf-installer"
+  cp /usr/local/lib/uavf-installer/mavk-installed-addon.tar.gz \
+    /usr/local/lib/uavf-installer/mavk-installed-addon.sha256 "$rootfs/usr/local/lib/uavf-installer/"
+  mkdir -p "$rootfs/usr/local/sbin"
+  cp /usr/local/sbin/stage-uavf-installer-mavk.sh "$rootfs/usr/local/sbin/"
+  chmod 0755 "$rootfs/usr/local/sbin/stage-uavf-installer-mavk.sh"
+  for name in uavf-plasma-session.py uavf-plasma-install.sh uavf-plasma-install.service; do
+    cp "/usr/local/sbin/$name" "$rootfs/usr/local/sbin/"
+  done
+  if [ -f /usr/local/lib/uavf-installer/desktop-profile ]; then
+    cp /usr/local/lib/uavf-installer/desktop-profile "$rootfs/usr/local/lib/uavf-installer/"
+  fi
+fi
 cat > /run/systemd/system/winavf-vsock.socket <<'EOF'
 [Unit]
 Description=WinAVF public vsock probe socket

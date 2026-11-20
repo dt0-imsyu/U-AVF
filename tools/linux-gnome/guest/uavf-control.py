@@ -7,10 +7,31 @@ import struct
 import subprocess
 import sys
 import fcntl
+from pathlib import Path
 
 HEADER=struct.Struct('<4sHHI')
 MAX=262144
 TYPES={'HELLO','PING','SESSION_INFO','STORAGE_INFO','SHUTDOWN','REBOOT','CLIPBOARD_SET','CLIPBOARD_GET'}
+MAVK_MODE_HELPER='/opt/uavf/mavk/installed-mode.py'
+TYPES.update({'MAVK_ENABLE','MAVK_DISABLE'})
+TYPES.add('PLASMA_INSTALL')
+PLASMA_UNIT=Path('/etc/systemd/system/uavf-plasma-install.service')
+PLASMA_READY=Path('/var/lib/uavf/plasma-x11.ready')
+
+
+def plasma_state():
+    if not PLASMA_UNIT.is_file():
+        return 'unavailable'
+    try:
+        state = subprocess.run(['systemctl','show','--property=ActiveState','--value',PLASMA_UNIT.name],
+                               check=True,capture_output=True,text=True,timeout=2).stdout.strip()
+    except (OSError,subprocess.SubprocessError):
+        return 'unavailable'
+    if state in ('activating','active','reloading','deactivating'):
+        return 'installing'
+    if state == 'failed':
+        return 'failed'
+    return 'ready' if PLASMA_READY.is_file() else 'available'
 
 def storage_info(grow=False):
     mount=subprocess.run(['findmnt','-n','-o','SOURCE,FSTYPE','/'],capture_output=True,text=True,check=True,timeout=3).stdout.split()
@@ -64,18 +85,42 @@ def handle(request):
     kind=request['type']
     result={'version':1,'id':request['id'],'type':kind,'ok':True}
     if kind=='HELLO': result.update(agent='uavf-control',agent_version=2,capabilities=['PING','SESSION_INFO','STORAGE_INFO','SHUTDOWN','REBOOT'])
+    if kind=='HELLO' and os.path.isfile(MAVK_MODE_HELPER): result['capabilities'].append('MAVK_MODE')
     elif kind=='PING': result['reply']='PONG'
     elif kind=='SESSION_INFO':
         sessions=subprocess.run(['loginctl','list-sessions','--no-legend'],capture_output=True,text=True,timeout=2)
         result.update(vcpu=os.cpu_count(),sessions=sessions.stdout[:8192],sessions_available=sessions.returncode==0)
         try: result.update(storage_info())
         except (OSError,ValueError,subprocess.SubprocessError): result.update(growth_supported=False)
+        if PLASMA_UNIT.is_file():
+            result['plasma_x11'] = plasma_state()
     elif kind=='STORAGE_INFO': result.update(storage_info())
     elif kind in ('CLIPBOARD_SET','CLIPBOARD_GET'):
         # Preserve already proven UCIP4054 agent until its explicit migration.
         result.update(ok=False,error='Clipboard uses the separate UCIP4054 channel')
     elif kind in ('SHUTDOWN','REBOOT'):
         if os.geteuid()!=0: result.update(ok=False,error='Power agent requires root service')
+        elif plasma_state() == 'installing': result.update(ok=False,error='Plasma installation in progress')
+    elif kind=='PLASMA_INSTALL':
+        state = plasma_state()
+        if os.geteuid()!=0 or state=='unavailable':
+            result.update(ok=False,error='Plasma installer unavailable')
+        elif state=='installing':
+            result['plasma_x11'] = state
+        else:
+            try:
+                subprocess.run(['systemctl','--no-block','start',PLASMA_UNIT.name],
+                               check=True,capture_output=True,timeout=2)
+                result['plasma_x11'] = 'installing'
+            except (OSError,subprocess.SubprocessError):
+                result.update(ok=False,error='Could not start Plasma installer')
+    elif kind in ('MAVK_ENABLE','MAVK_DISABLE'):
+        if not os.path.isfile(MAVK_MODE_HELPER): result.update(ok=False,error='Installed Mavk add-on unavailable')
+        else:
+            import runpy
+            try: result.update(runpy.run_path(MAVK_MODE_HELPER)['select_mode'](kind=='MAVK_ENABLE'))
+            except (OSError,ValueError,subprocess.SubprocessError) as error:
+                result.update(ok=False,error='Mavk mode: '+type(error).__name__)
     return result
 
 def main():

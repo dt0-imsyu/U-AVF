@@ -15,7 +15,7 @@ import socket
 _CAPTURE_BACKEND_LOGGED = set()
 
 def find_display(verbose=False):
-    # Match a logged-in GNOME shell to its GDM Xorg launcher, not to a
+    # Match a logged-in X11 compositor to its GDM Xorg launcher, not to a
     # guessed display number (or an independently started Xvnc desktop).
     processes = []
     for pid in os.listdir("/proc"):
@@ -24,7 +24,7 @@ def find_display(verbose=False):
         try:
             with open("/proc/" + pid + "/comm", "rb") as source:
                 comm = source.read().strip().decode("ascii", "replace")
-            if comm not in ("gnome-shell", "gdm-x-session", "Xorg"):
+            if comm not in ("gnome-shell", "kwin_x11", "gdm-x-session", "Xorg"):
                 continue
             uid = os.stat("/proc/" + pid).st_uid
             with open("/proc/" + pid + "/environ", "rb") as source:
@@ -37,7 +37,7 @@ def find_display(verbose=False):
         except (OSError, ValueError):
             continue
     for comm, uid, session, _ in processes:
-        if comm != "gnome-shell" or uid == 0 or session.get("XDG_SESSION_TYPE") != "x11":
+        if comm not in ("gnome-shell", "kwin_x11") or uid < 1000 or session.get("XDG_SESSION_TYPE") != "x11":
             continue
         display = session.get("DISPLAY", "")
         authority = session.get("XAUTHORITY", "")

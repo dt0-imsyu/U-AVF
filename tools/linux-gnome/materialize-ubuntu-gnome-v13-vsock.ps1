@@ -74,7 +74,9 @@ foreach ($path in @($VhdPath, $OutputRaw, $PatchPath, $ReportPath)) {
   if (Test-Path -LiteralPath $path) { throw "Refusing to overwrite: $path" }
 }
 if ((Get-Item -LiteralPath $SourceRaw).Length -ne $expectedBytes -or (Hash $SourceRaw) -ne $expectedSourceHash) { throw 'Exact disposable V10 source hash mismatch.' }
-if ((Get-Item -LiteralPath $PatchedInitrd).Length -le 80MB) { throw 'Patched initrd is unexpectedly small.' }
+# A valid Zstd repack of the main archive may be smaller than the original
+# 87 MB stream; retain a conservative floor that rejects a truncated payload.
+if ((Get-Item -LiteralPath $PatchedInitrd).Length -le 75MB) { throw 'Patched initrd is unexpectedly small.' }
 if ((Get-Item -LiteralPath $firmwareFd).Length -ne 2MB -or (Hash $firmwareFd) -ne $expectedFirmwareHash) { throw 'V11 FDT firmware artifact hash mismatch.' }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ReportPath), (Split-Path -Parent $PatchPath) | Out-Null
 

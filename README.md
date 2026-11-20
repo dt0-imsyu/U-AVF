@@ -1,157 +1,115 @@
 # U-AVF
 
-Non-root Ubuntu Desktop ARM64 on Android Virtualization Framework.
-[Download U-AVF 1.0.1](https://github.com/dt0-imsyu/U-AVF/releases/tag/v1.0.1).
-
-1.0.1 fixes a false platform-integrity failure, compatibility-screen overlap and missing Skip test action. Existing workspaces are preserved. [Hotfix details](docs/release-preparation/RELEASE_1.0.1.md).
-
-1.0.1 исправляет ложную ошибку целостности платформы, наложение кнопки на сообщение и отсутствие Skip test. Существующие workspace сохраняются. [Подробности обновления](docs/release-preparation/RELEASE_1.0.1.md).
-
-## Screenshots / Скриншоты
-
-Ubuntu GNOME desktop / Рабочий стол Ubuntu GNOME
-
-![Ubuntu GNOME desktop running in U-AVF](docs/screenshots/ubuntu-desktop.jpg)
-
-Workspace controls / Управление workspace
-
-![U-AVF Ubuntu workspace controls](docs/screenshots/ubuntu-workspace.jpg)
-
-Boot progress / Состояние загрузки
-
-![U-AVF Ubuntu boot progress](docs/screenshots/ubuntu-startup.jpg)
+Ubuntu Desktop and experimental Windows 11 ARM64 on Android Virtualization
+Framework. U-AVF 1.2 is in preparation. The current public release is
+[U-AVF 1.0.1](https://github.com/dt0-imsyu/U-AVF/releases/tag/v1.0.1).
 
 ## English
 
-U-AVF launches an installed Ubuntu GNOME desktop without rooting Android, unlocking
-the bootloader or flashing. Tested on Samsung Galaxy Tab S11 (GenieZone/crosvm).
-The official Ubuntu ISO is not modified. Other devices require their own validation.
-The current APK requires Android 16 / API 36 or newer, ARM64 and usable AVF/custom-VM permissions.
+U-AVF requires an ARM64 device with Android 16 (API 36) or newer, usable AVF and
+custom-VM permissions. It runs without root, an unlocked bootloader or a
+modified system image. The reference device is the Samsung Galaxy Tab S11.
 
-### What works
+### What’s in 1.2
 
-- Managed persistent workspace and automatic Ubuntu installation/bootstrap.
-- Hardware OpenGL through VirGL/Mali; encoded 1920×1200 display with 60 FPS capability.
-- Keyboard, mouse, touch, internet and audio on the tested configuration.
-- Opt-in text clipboard; sharing can be toggled without restarting the VM.
-- Device prerequisite checks, workspace settings, diagnostics and storage growth.
+- **Ubuntu 24.04.5 Desktop ARM64.** Select the official ISO from Android’s file
+  picker. A managed workspace keeps the installed system and virtual disk.
+  The installer offers GNOME X11 with H.264/OpenGL or experimental Mavk, and
+  experimental KDE Plasma X11 with Mavk. The KDE option downloads packages on
+  first setup. H.264/VirGL remains the stable display path.
+- **Windows 11 ARM64 (Experimental).** Open the Windows workspace and select
+  Windows 11 ARM64 25H2 (ru-RU), build **26200.6584**, in Android’s file picker.
+  The [Microsoft Arm64 download page](https://www.microsoft.com/en-us/software-download/windows11arm64)
+  tracks the current release, which may differ from this profile.
+  The profile also requires the matching verified WinPE template. The wizard verifies
+  the media, prepares a persistent disk and prompts before installing Windows.
+  WinPE, installation and reboot into the installed system have been tested
+  on Tab S11. Other ISO builds and editions are outside this profile.
+- **New interface.** English, Russian, Spanish, German, Simplified Chinese and
+  Japanese. Workspace controls cover keyboard, mouse, touch, optional system
+  key capture, display mode and resolution. Available resolutions depend on
+  the guest and display path. The verified Windows profile uses 1920×1200.
+- **Compatibility and diagnostics.** A local AVF test checks VM creation,
+  boot, memory, storage and vsock. Diagnostics support search, copy and
+  English-language log export. Sending the compatibility result to Firebase
+  uses the opt-in switch on the compatibility screen.
 
-Hardware Vulkan is not available on the tested host. Shared folder and universal ISO support are
-not promised. Installer flicker, slow App Center and installed-status transition
-after the first reboot remain known issues. See [release notes](docs/release-preparation/RELEASE_1.0.md).
+Mavk/AHB graphics are experimental on Ubuntu. Some apps, compositor animations
+and desktop configurations remain limited. Windows uses the existing display
+path. Hardware D3D, WDDM and DWM acceleration are still in development.
 
-### Windows research status
+### Setup and updates
 
-Windows ARM64 on native AVF reaches Windows Boot Manager, `winload.efi` and a
-successful UEFI `ExitBootServices` return. Boot after firmware handoff remains
-blocked: neither WinPE nor the Windows desktop has been confirmed on this path.
-A separate physical ARM timer defect is reproducible, but its causal connection
-to the Windows hang remains a strong hypothesis, not a confirmed diagnosis.
-
-### Setup
-
-1. Install the official signed APK from Releases; do not uninstall an existing app
-   to bypass a signature mismatch. Normal same-key updates preserve the workspace.
-2. Complete onboarding and the real device prerequisite check. If AVF permissions
-   are missing, follow the app's USB-debugging/ADB instructions:
-   `adb shell pm grant com.example.winavf android.permission.MANAGE_VIRTUAL_MACHINE`
-   and `adb shell pm grant com.example.winavf android.permission.USE_CUSTOM_VIRTUAL_MACHINE`.
-   Availability depends on the device; a grant command alone does not prove support.
-3. Download **Ubuntu 24.04.5 Desktop ARM64** from the official Ubuntu page opened
-   by the app. Select the ISO in U-AVF; it checks the supported file.
-4. Create a workspace, choose root storage, then Install. Follow Ubuntu Setup for
-   language/keyboard/account. Preserve the managed storage layout.
-5. Reboot after installation and wait for bootstrap. Use Launch Ubuntu thereafter.
-   Temporary Live Session intentionally boots the ISO, not your installed system.
-6. Enable Share text clipboard under Input if desired. Reinstall/Delete erase
-   Ubuntu data. Clearing Android application data may remove private workspaces.
-
-[Detailed quick start](docs/release-preparation/QUICK_START.md) ·
-[Privacy notice](docs/release-preparation/PRIVACY.md) ·
-[Third-party compliance](docs/release-preparation/THIRD_PARTY_COMPLIANCE.md).
-
-### Licensing and development
-
-Compatibility statistics are optional and disabled by default. With consent,
-reports are sent to the cloud Firebase database for development and optimization,
-not stored only locally. Guest files, passwords and clipboard contents are not sent.
-See the privacy notice above for the collected fields and retention limitations.
-
-This is a multi-license repository. Only the original files in [LICENSE_SCOPE.md](LICENSE_SCOPE.md)
-use [U-AVF Source-Available License 1.0](LICENSE-UAVF.txt), requiring permission for
-reuse in another product. Older Apache rights remain; third-party components retain
-their licenses. See [LICENSE](LICENSE). This is not a blanket open-source license.
-
-A fresh clone does not include all large platform payloads and cannot build the
-tested release standalone. The release build script accepts the official APK as
-the tested binary-payload base; third-party source/build provenance review remains incomplete.
-No guest disks, personal logs, signing keys or Windows media belong in Git.
+Use a signed APK and update in place with the same signing key to retain your
+workspace. An installed Ubuntu workspace boots from its existing disk without
+the separate ISO download. Separate QA apps keep their own workspaces. Follow the in-app AVF
+permission instructions, then choose an OS
+from the dashboard. Use the official Ubuntu ISO or the supported Windows media
+described above. To try Ubuntu from ISO, open **Systems → Temporary live session**.
+Reinstalling, deleting a workspace or clearing Android app
+data can erase a virtual disk.
 
 ## Русский
 
-U-AVF запускает установленную Ubuntu GNOME без root, разблокировки загрузчика и
-прошивки Android. Проверено на Samsung Galaxy Tab S11 (GenieZone/crosvm).
-Официальный Ubuntu ISO не изменяется. Другие устройства требуют отдельной проверки.
-Текущий APK требует Android 16 / API 36 или новее, ARM64 и доступные разрешения AVF/custom VM.
+Для U-AVF нужны ARM64, Android 16 (API 36) или новее, работающий AVF и
+разрешения для пользовательских VM. Root, разблокировка загрузчика и
+изменение системного образа не нужны. Основное тестовое устройство —
+Samsung Galaxy Tab S11.
 
-### Что работает
+### Что входит в 1.2
 
-- Постоянный workspace и автоматизированная установка/bootstrap Ubuntu.
-- Аппаратный OpenGL через VirGL/Mali; кодированный вывод 1920×1200 с возможностью 60 FPS.
-- Клавиатура, мышь, touch, интернет и звук на проверенной конфигурации.
-- Добровольный текстовый буфер обмена, переключаемый без перезапуска VM.
-- Проверка устройства, настройки workspace, диагностика и расширение диска.
+- **Ubuntu 24.04.5 Desktop ARM64.** Официальный ISO выбирается в системном
+  файловом менеджере Android. Установленная система остаётся на постоянном
+  виртуальном диске. Установщик предлагает GNOME X11 с H.264/OpenGL или
+  экспериментальным Mavk, а также экспериментальный KDE Plasma X11 с Mavk.
+  Для KDE при первой настройке загружаются пакеты. H.264/VirGL остаётся
+  стабильным способом вывода.
+- **Windows 11 ARM64 (Experimental).** В воркспейсе Windows выберите
+  ISO Windows 11 ARM64 25H2 (ru-RU), сборка **26200.6584**, в файловом менеджере Android.
+  [Страница загрузки Microsoft](https://www.microsoft.com/ru-ru/software-download/windows11arm64)
+  предлагает актуальный выпуск, который может отличаться от этого профиля.
+  Для этого профиля также нужен проверенный шаблон WinPE. Мастер проверяет
+  файлы, готовит постоянный диск и запрашивает подтверждение перед установкой.
+  WinPE, установка и повторная загрузка установленной системы проверены на
+  Tab S11. Другие ISO и редакции не входят в этот профиль.
+- **Новый интерфейс.** Русский, английский, испанский, немецкий, упрощённый
+  китайский и японский. В воркспейсе доступны клавиатура, мышь, сенсорный ввод,
+  опциональный перехват системных клавиш, настройка вывода и разрешения.
+  Доступные разрешения зависят от гостя и режима вывода. Проверенный профиль
+  Windows работает при 1920×1200.
+- **Совместимость и диагностика.** Локальный тест AVF проверяет создание и
+  загрузку VM, память, накопитель и vsock. В диагностике есть поиск,
+  копирование и экспорт английских логов. Отправка результата в Firebase
+  управляется переключателем на экране проверки и требует согласия.
 
-Аппаратный Vulkan на проверенном устройстве недоступен. Универсальная поддержка ISO
-и общая папка не обещаются. Известные проблемы: мерцание установщика, медленный
-App Center и переход статуса в «установлено» после первого reboot.
-Подробнее — [описание релиза](docs/release-preparation/RELEASE_1.0.md).
+Mavk/AHB на Ubuntu остаётся экспериментальным. Для части приложений,
+анимаций и конфигураций рабочего стола есть ограничения. Windows использует
+существующий вывод. Аппаратный D3D, WDDM и ускорение DWM в разработке.
 
-### Состояние исследования Windows
+### Установка и обновление
 
-Windows ARM64 на native AVF доходит до Windows Boot Manager, `winload.efi` и
-успешного возврата UEFI `ExitBootServices`. Дальнейшая загрузка после передачи
-управления firmware заблокирована: запуск WinPE или рабочего стола Windows на
-этом пути не подтверждён. Отдельно воспроизводится дефект физического ARM timer,
-но его связь с зависанием Windows — сильная гипотеза, а не доказанная причина.
+Используйте подписанный APK и обновляйте приложение поверх установленного
+с тем же ключом подписи, чтобы сохранить воркспейс. Установленная Ubuntu
+загружается со своего диска без отдельного файла ISO. У отдельных тестовых
+приложений свои воркспейсы. Пройдите проверку AVF
+по инструкции приложения и выберите ОС на главном экране. Запуск Ubuntu из ISO
+доступен в **Системы → Временная Live-сессия**. Переустановка,
+удаление воркспейса или очистка данных приложения могут удалить виртуальный диск.
 
-### Как пользоваться
+## Licensing and privacy / Лицензии и приватность
 
-1. Установите официальный подписанный APK из Releases. Не удаляйте старое приложение
-   ради обхода несовпадения подписи: обычное обновление с тем же ключом сохраняет workspace.
-2. Пройдите onboarding и настоящую проверку устройства. Если разрешений AVF нет,
-   следуйте инструкции приложения по USB debugging/ADB:
-   `adb shell pm grant com.example.winavf android.permission.MANAGE_VIRTUAL_MACHINE`
-   и `adb shell pm grant com.example.winavf android.permission.USE_CUSTOM_VIRTUAL_MACHINE`.
-   Доступность зависит от устройства; успешная команда сама по себе не доказывает совместимость.
-3. Скачайте **Ubuntu 24.04.5 Desktop ARM64** с официальной страницы Ubuntu,
-   которую открывает приложение. Выберите ISO в U-AVF для проверки поддерживаемого файла.
-4. Создайте workspace, задайте размер root-диска и нажмите Install. В Ubuntu Setup
-   выберите язык, клавиатуру и учётную запись. Сохраните служебную разметку U-AVF.
-5. После установки нажмите перезагрузку и дождитесь bootstrap. Затем используйте
-   Launch Ubuntu. Temporary Live Session намеренно загружает ISO, не установленную систему.
-6. При необходимости включите Share text clipboard в Input. Reinstall/Delete удаляют
-   данные Ubuntu. Очистка данных Android-приложения может удалить приватные workspace.
+The repository uses multiple licenses. First-party scope, earlier Apache
+rights and third-party terms are documented separately. The APK build requires
+a retained binary-payload base. Corresponding-source and redistribution
+checks remain open for some bundled components.
 
-[Подробная инструкция](docs/release-preparation/QUICK_START.md) ·
-[Приватность](docs/release-preparation/PRIVACY.md) ·
-[Сторонние компоненты](docs/release-preparation/THIRD_PARTY_COMPLIANCE.md).
+В репозитории несколько лицензий. Область собственной лицензии, прежние права
+Apache и условия сторонних компонентов описаны отдельно. Для сборки APK нужна
+сохранённая база с бинарными компонентами. Для части из них ещё требуется
+проверить комплект исходников и условия распространения.
 
-### Лицензирование и разработка
-
-Статистика совместимости добровольная и по умолчанию выключена. При согласии
-результаты идут в облачную Firebase для разработки и оптимизации, не в локальную
-базу. Пароли, гостевые файлы и буфер туда не отправляются. Состав данных и ограничения
-хранения описаны в политике приватности выше.
-
-В репозитории несколько лицензий. Только собственные файлы, перечисленные в
-[LICENSE_SCOPE.md](LICENSE_SCOPE.md), используют [U-AVF Source-Available License 1.0](LICENSE-UAVF.txt):
-для использования в другом продукте нужно разрешение. Старые права Apache и
-лицензии сторонних компонентов сохраняются. См. [LICENSE](LICENSE).
-Это не единая open-source лицензия на весь репозиторий.
-
-Свежий clone не содержит всех больших platform payloads и не собирает проверенный
-релиз самостоятельно. Release builder использует официальный APK как базу
-проверенных бинарных payloads. Полная проверка исходников и происхождения сборки
-сторонних компонентов ещё не завершена. Гостевые диски, личные логи, ключи подписи
-и Windows media не должны попадать в Git.
+[License / Лицензия](LICENSE) ·
+[License scope / Область лицензии](LICENSE_SCOPE.md) ·
+[Third-party notices / Сторонние компоненты](docs/release-preparation/THIRD_PARTY_COMPLIANCE.md) ·
+[Privacy / Приватность](docs/release-preparation/PRIVACY.md) ·
+[Compatibility data / Статистика совместимости](backend/firebase/README.md)
