@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.uavfwinpetest">
+    <uses-permission android:name="android.permission.MANAGE_VIRTUAL_MACHINE" />
+    <uses-permission android:name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <application android:debuggable="true" android:extractNativeLibs="true" android:label="U-AVF Windows diagnostic" android:theme="@android:style/Theme.Material.NoActionBar">
+        <service android:name="com.example.winavf.WindowsVmOwnerService" android:process=":vmowner" android:exported="false" android:foregroundServiceType="dataSync" />
+        <provider android:name="com.example.winavf.WindowsOwnerProvider" android:authorities="com.example.uavfwinpetest.owner" android:exported="true" />
+        <activity android:name="com.example.winavf.WindowsDiagnosticActivity" android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard">
+        </activity>
+    </application>
+</manifest>

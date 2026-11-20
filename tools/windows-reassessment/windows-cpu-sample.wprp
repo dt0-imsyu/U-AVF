@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0" Author="U-AVF" Company="U-AVF">
+  <Profiles>
+    <SystemCollector Id="UAVFCPUCollector" Name="U-AVF CPU instruction sample">
+      <BufferSize Value="64" />
+      <Buffers Value="64" />
+    </SystemCollector>
+    <SystemProvider Id="UAVFCPUProvider">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="SampledProfile" />
+      </Keywords>
+    </SystemProvider>
+    <Profile Id="UAVFCPUSample.Verbose.Memory" Name="UAVFCPUSample" Description="Bounded CPU instruction samples; no memory dump" LoggingMode="Memory" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="UAVFCPUCollector">
+          <SystemProviderId Value="UAVFCPUProvider" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

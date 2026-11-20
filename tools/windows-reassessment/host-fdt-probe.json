@@ -1,0 +1,11 @@
+{
+  "name": "uavf-windows-host-fdt-probe-20261007",
+  "kernel": "/data/local/tmp/uavf-windows-host-fdt-20261007/host-fdt-probe.Image",
+  "params": "",
+  "disks": [{"image": "/data/local/tmp/uavf-windows-uart-gas-20261004/windows-kd.img", "writable": false}],
+  "protected": false,
+  "memory_mib": 4096,
+  "cpu_topology": "one_cpu",
+  "console_input_device": "ttyS0",
+  "platform_version": "~1.0"
+}

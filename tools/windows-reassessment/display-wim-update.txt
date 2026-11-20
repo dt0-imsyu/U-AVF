@@ -1,0 +1,8 @@
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/winpe-screen-arm64.exe" "/Windows/System32/winpe-screen.exe"
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/winpe-display-startup-arm64.exe" "/Windows/System32/winpe-display-startup.exe"
+add "C:/Users/denis/MainProjects/win11ontab/Non-root-Windows-VM/tools/windows-reassessment/display-winpeshl.ini" "/Windows/System32/winpeshl.ini"
+add "C:/Users/denis/MainProjects/win11ontab/handoff-compact-2026-08-23/handoff-compact-2026-08-23/windows-headless-media/virtio-attestation-full/w11/arm64/viostor" "/Windows/System32/uavf-drivers/viostor"
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/winpe-encode-arm64.exe" "/Windows/System32/winpe-encode.exe"
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/openh264-2.5.1-win-arm64.dll" "/Windows/System32/openh264.dll"
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/winpe-vsock-arm64.exe" "/Windows/System32/winpe-vsock.exe"
+add "C:/Users/denis/MainProjects/win11ontab/handoff-compact-2026-08-23/handoff-compact-2026-08-23/windows-headless-media/virtio-attestation-full/w11/arm64/viosock" "/Windows/System32/uavf-drivers/viosock"

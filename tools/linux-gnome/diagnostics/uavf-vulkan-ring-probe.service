@@ -1,0 +1,17 @@
+[Unit]
+Description=Temporary U-AVF isolated Vulkan ring diagnostic
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=uavf
+SupplementaryGroups=render
+Environment=HOME=/home/uavf
+ExecStart=/usr/bin/python3 /home/uavf/.local/state/uavf/vulkan-probe/probe.py
+TimeoutStartSec=120
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

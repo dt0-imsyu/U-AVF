@@ -1,0 +1,11 @@
+[Unit]
+Description=U-AVF Plasma X11 installation
+After=network-online.target accounts-daemon.service
+Wants=network-online.target accounts-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/local/sbin/uavf-plasma-install.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800

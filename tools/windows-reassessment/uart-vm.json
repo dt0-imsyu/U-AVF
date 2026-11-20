@@ -1,0 +1,11 @@
+{
+  "name": "uavf-windows-uart-gas-20261004",
+  "kernel": "/data/local/tmp/uavf-windows-uart-gas-20261004/u-boot-wrapper-v24.Image",
+  "params": "",
+  "disks": [{"image": "/data/local/tmp/uavf-windows-uart-gas-20261004/windows-kd.img", "writable": true}],
+  "protected": false,
+  "memory_mib": 4096,
+  "cpu_topology": "one_cpu",
+  "console_input_device": "ttyS0",
+  "platform_version": "~1.0"
+}

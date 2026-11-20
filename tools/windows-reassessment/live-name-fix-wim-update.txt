@@ -1,0 +1,1 @@
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/live-runtime-prepared-20261008/winpe-vsock-live-name-fix.exe" "/Windows/System32/winpe-vsock.exe"

@@ -1,0 +1,3 @@
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/live-runtime-prepared-20261008/winpe-encode-live.exe" "/Windows/System32/winpe-encode.exe"
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/live-runtime-prepared-20261008/winpe-vsock-live-current.exe" "/Windows/System32/winpe-vsock.exe"
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/live-runtime-prepared-20261008/winpe-display-startup-live.exe" "/Windows/System32/winpe-display-startup.exe"

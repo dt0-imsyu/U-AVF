@@ -1,0 +1,1 @@
+add "C:/Users/denis/MainProjects/win11ontab/build-logs/windows-post-linux-reassessment-20261004/winpe-display-startup-lifetime-arm64.exe" "/Windows/System32/winpe-display-startup.exe"
