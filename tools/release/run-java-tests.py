@@ -34,6 +34,7 @@ NEEDS_ARGS = {
     'com.example.winavf.PersistentDiskGrowthTest': 'needs an empty growth-test.raw fixture',
     'com.example.winavf.WindowsKdWireTest': 'needs a Windows KD capture',
     'com.example.winavf.WindowsSetupLayoutTest': 'needs a WinPE template and geometry file',
+    'com.example.winavf.Fat32VolumeTest': 'needs a WinPE ESP image path',
 }
 
 
@@ -63,6 +64,8 @@ def main():
                         default=Path(os.environ.get('JAVA_HOME')) if os.environ.get('JAVA_HOME')
                         else Path(r'C:\Program Files\Android\Android Studio\jbr'))
     parser.add_argument('--keep', action='store_true', help='Keep the temporary build directory')
+    parser.add_argument('--winpe-esp', type=Path,
+                        help='WinPE ESP image for Fat32VolumeTest and WindowsSetupLayoutTest')
     args = parser.parse_args()
 
     android_jar = args.sdk / 'platforms/android-36/android.jar'
@@ -78,6 +81,10 @@ def main():
     classes = work / 'classes'
     generated = work / 'generated'
     classes.mkdir()
+
+    fixture = {}
+    if args.winpe_esp and args.winpe_esp.is_file():
+        fixture['com.example.winavf.Fat32VolumeTest'] = [str(args.winpe_esp)]
 
     generate_assets(args.apk, generated)
 
@@ -108,10 +115,12 @@ def main():
 
     passed, skipped, failed = [], [], []
     for name in test_classes:
-        run = subprocess.run([java, '-cp', classpath, name], capture_output=True, text=True)
+        extra = fixture.get(name, [])
+        run = subprocess.run([java, '-cp', classpath, name, *extra],
+                             capture_output=True, text=True)
         if run.returncode == 0:
             passed.append(name)
-        elif name in NEEDS_ARGS and 'ArrayIndexOutOfBoundsException' in run.stderr:
+        elif not extra and name in NEEDS_ARGS and 'ArrayIndexOutOfBoundsException' in run.stderr:
             skipped.append((name, NEEDS_ARGS[name]))
         else:
             failed.append((name, run.stderr.strip().splitlines()[:4]))

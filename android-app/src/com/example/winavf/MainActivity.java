@@ -132,7 +132,6 @@ public final class MainActivity extends Activity {
    private static final String V12_RECOVERY_PATCH_SHA256 = "9C109F3EB95D1B6F27929D970152725E0F2328A25FC3C847D8ED1603D86EDC55";
    private static final String IMAGE_PATCH_STAGING_NAME = "winavf-image-patch.bin";
    private static final String IMAGE_PATCH_ACTIVE_NAME = "active-image-patch.bin";
-   private static final byte[] IMAGE_PATCH_MAGIC;
    private static final String GENERIC_UBUNTU_VM_NAME = "winavf-generic-ubuntu-24045";
    private static final String GENERIC_UBUNTU_ISO_NAME = "ubuntu-24.04.5-desktop-arm64.iso";
    private static final long GENERIC_UBUNTU_ISO_SIZE = 3967463424L;
@@ -1429,7 +1428,7 @@ public final class MainActivity extends Activity {
       };
       state.run();
       new Thread(() -> {
-         File report=new File(this.getExternalFilesDir(null),UBUNTU_PERSISTENT_REPORT_NAME);String value=readTail(report,16384);
+         File report=new File(this.getExternalFilesDir(null),UBUNTU_PERSISTENT_REPORT_NAME);String value=IoUtil.readTail(report,16384);
          this.runOnUiThread(() -> {if(this.productScreen==ProductScreen.INSTALL_STATUS && setup.getParent()==this.homePanel)
             setup.partitionAudit(this.persistentUbuntuDiskFile().isFile() && value.contains("DISK_GPT_AUDIT=PASS"));});
       },"U-AVF-figma-setup-status").start();
@@ -2147,7 +2146,7 @@ public final class MainActivity extends Activity {
    private String graphicsEvidence() {
       File directory=this.getExternalFilesDir(null);
       for(String name:new String[]{"ubuntu-persistent-serial.log","frame-bridge-test-serial.log"}) {
-         String log=readTail(new File(directory,name),131072);
+         String log=IoUtil.readTail(new File(directory,name),131072);
          for(String line:log.split("\\r?\\n")) {
             String lower=line.toLowerCase(Locale.ROOT);
             boolean rendererLine=lower.contains("opengl renderer") || lower.contains("gl_renderer=") || lower.contains("renderer for virgl");
@@ -2459,6 +2458,23 @@ public final class MainActivity extends Activity {
          if(windowsSetupProgress!=seen)this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
          else this.refreshWindowsSetupWhileActive(screen,seen);
       },700);
+   }
+
+   /** Reads a file from the FAT32 ESP that starts at byte 1 MiB of the image. */
+   private static byte[] readEspFile(File disk, String... path) throws Exception {
+      try (var volume = Fat32Volume.open(disk)) {
+         byte[] data = volume.readFile(path);
+         if (data == null) throw new IllegalStateException("FAT entry not found: " + String.join("/", path));
+         return data;
+      }
+   }
+
+   /** Reads an 8.3 named file from the FAT32 root directory. */
+   private static byte[] readEspRootFile(File disk, String name, String extension, int maximumBytes)
+         throws Exception {
+      try (var volume = Fat32Volume.open(disk)) {
+         return volume.readRootFile(name, extension, maximumBytes);
+      }
    }
 
    private WindowsWorkspaceMedia windowsMedia() {
@@ -2797,7 +2813,7 @@ public final class MainActivity extends Activity {
 
          MessageDigest var5 = MessageDigest.getInstance("SHA-256");
          long var6 = 0L;
-         if (var2.isFile() && var2.length() == 3967463424L && "2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14".equals(hex(sha256File(var2)))) {
+         if (var2.isFile() && var2.length() == 3967463424L && "2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14".equals(Digest.hex(Digest.sha256File(var2)))) {
             this.onUbuntuIsoImported(live);
             this.show("The selected Ubuntu image matches the copy already staged in U-AVF.");
             return;
@@ -2873,7 +2889,7 @@ public final class MainActivity extends Activity {
             var8.close();
          }
 
-         String var24 = hex(var5.digest());
+         String var24 = Digest.hex(var5.digest());
          if (var6 != 3967463424L || !"2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14".equals(var24)) {
             var3.delete();
             throw new SecurityException("This is not the verified Ubuntu 24.04.5 ARM64 desktop ISO (size/hash mismatch)");
@@ -3083,7 +3099,7 @@ public final class MainActivity extends Activity {
          var8.close();
       }
 
-      if (var6 != var2 || !var4.equals(hex(var5.digest()))) {
+      if (var6 != var2 || !var4.equals(Digest.hex(var5.digest()))) {
          throw new SecurityException("Bundled platform asset failed verification: " + var1);
       }
    }
@@ -3134,7 +3150,7 @@ public final class MainActivity extends Activity {
       }
 
       ((InputStream)var3).close();
-      return hex(var2.digest());
+      return Digest.hex(var2.digest());
    }
 
    private Button button(String var1) {
@@ -3340,7 +3356,7 @@ public final class MainActivity extends Activity {
             this.show("Disk verification skipped for " + var5 + ".");
          } else if (var2 >= 0L && var1.length() != var2) {
             throw new IllegalStateException(var5 + " size mismatch");
-         } else if (var4 != null && !var4.equals(hex(sha256File(var1)))) {
+         } else if (var4 != null && !var4.equals(Digest.hex(Digest.sha256File(var1)))) {
             throw new SecurityException(var5 + " SHA-256 mismatch");
          }
       } else {
@@ -3353,39 +3369,7 @@ public final class MainActivity extends Activity {
    }
 
    private String diskShaForReport(File var1) throws Exception {
-      return this.skipDiskValidation() ? "SKIPPED_BY_USER" : hex(sha256File(var1));
-   }
-
-   private static String readTail(File var0, int var1) {
-      if (!var0.isFile()) {
-         return "";
-      } else {
-         try {
-            RandomAccessFile var2 = new RandomAccessFile(var0, "r");
-
-            String var6;
-            try {
-               long var3 = Math.max(0L, var2.length() - (long)var1);
-               var2.seek(var3);
-               byte[] var5 = new byte[(int)(var2.length() - var3)];
-               var2.readFully(var5);
-               var6 = new String(var5, StandardCharsets.UTF_8);
-            } catch (Throwable var8) {
-               try {
-                  var2.close();
-               } catch (Throwable var7) {
-                  var8.addSuppressed(var7);
-               }
-
-               throw var8;
-            }
-
-            var2.close();
-            return var6;
-         } catch (Throwable var9) {
-            return "";
-         }
-      }
+      return this.skipDiskValidation() ? "SKIPPED_BY_USER" : Digest.hex(Digest.sha256File(var1));
    }
 
    public void onNewIntent(Intent var1) {
@@ -3586,10 +3570,10 @@ public final class MainActivity extends Activity {
       var1[3] = 70;
       var1[4] = 1;
       var1[5] = 1;
-      putLe16(var1, 8, 320);
-      putLe16(var1, 10, 200);
-      putLe32(var1, 12, 1398359601);
-      putLe32(var1, 16, 256000);
+      ByteCodec.putLe16(var1, 8, 320);
+      ByteCodec.putLe16(var1, 10, 200);
+      ByteCodec.putLe32(var1, 12, 1398359601);
+      ByteCodec.putLe32(var1, 16, 256000);
 
       for(int var2 = 0; var2 < 200; ++var2) {
          for(int var3 = 0; var3 < 320; ++var3) {
@@ -3603,21 +3587,9 @@ public final class MainActivity extends Activity {
 
       CRC32 var5 = new CRC32();
       var5.update(var1, 28, 256000);
-      putLe32(var1, 20, (int)var5.getValue());
+      ByteCodec.putLe32(var1, 20, (int)var5.getValue());
       this.frameDecoder.feed(var1, 0, var1.length);
       this.show("Synthetic WAVF surface audit frame submitted.");
-   }
-
-   private static void putLe16(byte[] var0, int var1, int var2) {
-      var0[var1] = (byte)var2;
-      var0[var1 + 1] = (byte)(var2 >>> 8);
-   }
-
-   private static void putLe32(byte[] var0, int var1, int var2) {
-      var0[var1] = (byte)var2;
-      var0[var1 + 1] = (byte)(var2 >>> 8);
-      var0[var1 + 2] = (byte)(var2 >>> 16);
-      var0[var1 + 3] = (byte)(var2 >>> 24);
    }
 
    private void auditVirtualizationCapabilities() {
@@ -3862,7 +3834,7 @@ public final class MainActivity extends Activity {
             }
 
             var62.println("patternBytes=" + var63.length);
-            var62.println("patternSha256=" + hex(sha256(var63)));
+            var62.println("patternSha256=" + Digest.hex(Digest.sha256(var63)));
             File var64 = new File(this.getFilesDir(), "payload");
             if (!var64.exists() && !var64.mkdirs()) {
                throw new IllegalStateException("Cannot create payload directory");
@@ -3903,7 +3875,7 @@ public final class MainActivity extends Activity {
             var17.setDaemon(true);
             var17.start();
             var4.getClass().getMethod("run").invoke(var4);
-            int var18 = waitForBytes(var8, var7, CONSOLE_BINARY_ECHO_READY, 8000L);
+            int var18 = IoUtil.waitForBytes(var8, var7, CONSOLE_BINARY_ECHO_READY, 8000L);
             if (var18 < 0) {
                throw new IllegalStateException("Guest readiness marker not observed");
             }
@@ -3912,7 +3884,7 @@ public final class MainActivity extends Activity {
             var6.write(var63);
             var6.flush();
             var62.println("patternTransmitted=true");
-            if (!waitForLength(var8, var7, var18 + CONSOLE_BINARY_ECHO_READY.length + var63.length, 8000L)) {
+            if (!IoUtil.waitForLength(var8, var7, var18 + CONSOLE_BINARY_ECHO_READY.length + var63.length, 8000L)) {
                throw new IllegalStateException("Timed out waiting for echoed pattern");
             }
 
@@ -3938,7 +3910,7 @@ public final class MainActivity extends Activity {
 
             var21.close();
             var62.println("echoedBytes=" + var20.length);
-            var62.println("echoedSha256=" + hex(sha256(var20)));
+            var62.println("echoedSha256=" + Digest.hex(Digest.sha256(var20)));
             boolean var10001 = Arrays.equals(var63, var20);
             var62.println("byteExact=" + var10001);
             if (!Arrays.equals(var63, var20)) {
@@ -4055,57 +4027,6 @@ public final class MainActivity extends Activity {
       call(var8, "setVmConsoleInputSupported", Boolean.TYPE, true);
       call(var8, "setCustomImageConfig", var2, var5);
       return call(var8, "build");
-   }
-
-   private static boolean waitForLength(ByteArrayOutputStream var0, Object var1, int var2, long var3) throws InterruptedException {
-      long var5 = System.currentTimeMillis() + var3;
-      synchronized(var1) {
-         while(var0.size() < var2) {
-            long var8 = var5 - System.currentTimeMillis();
-            if (var8 <= 0L) {
-               return false;
-            }
-
-            var1.wait(var8);
-         }
-
-         return true;
-      }
-   }
-
-   private static int waitForBytes(ByteArrayOutputStream var0, Object var1, byte[] var2, long var3) throws InterruptedException {
-      long var5 = System.currentTimeMillis() + var3;
-      synchronized(var1) {
-         while(true) {
-            byte[] var8 = var0.toByteArray();
-
-            for(int var9 = 0; var9 <= var8.length - var2.length; ++var9) {
-               boolean var10 = true;
-
-               for(int var11 = 0; var11 < var2.length; ++var11) {
-                  if (var8[var9 + var11] != var2[var11]) {
-                     var10 = false;
-                     break;
-                  }
-               }
-
-               if (var10) {
-                  return var9;
-               }
-            }
-
-            long var14 = var5 - System.currentTimeMillis();
-            if (var14 <= 0L) {
-               return -1;
-            }
-
-            var1.wait(var14);
-         }
-      }
-   }
-
-   private static String hex(byte[] var0) {
-      return HexFormat.of().formatHex(var0).toUpperCase(Locale.ROOT);
    }
 
    private void startTest() {
@@ -4249,7 +4170,7 @@ public final class MainActivity extends Activity {
          File var16 = new File(this.getExternalFilesDir((String)null), "ubuntu-gnome-v21-vsock-firmware.patch");
          this.requireDisk(var16, 4194436L, "936B0E8106806E5E4AC99C4C8E9FD9394F34747992E7E44BBFF885A8AD50553A", "Ubuntu-only firmware patch");
          File var7 = this.copyFile(var16, new File(var3, "ubuntu-gnome-v21-vsock-firmware.patch"), this.checkedCopyLength(4194436L), false);
-         applyPatch(var7, var5, false);
+         ImagePatch.apply(var7, var5, false);
          String var8 = var1 ? "winavf-ubuntu-gnome-24045-v21-q1" : "winavf-ubuntu-gnome-24045-v21";
          String var9 = var1 ? "mem=2G virtio_blk.queue_depth=1" : "mem=2G";
          Object var10 = this.buildConfig(var4, var5, false, var8, var9);
@@ -4717,7 +4638,7 @@ public final class MainActivity extends Activity {
             throw new IllegalStateException("Missing V22 control image: " + String.valueOf(var16));
          }
 
-         String var17 = hex(sha256File(var16));
+         String var17 = Digest.hex(Digest.sha256File(var16));
          if (!V22_EXT4_CONTROL_MEDIA_SHA256.equals(var17)) {
             throw new SecurityException("V22 control image hash mismatch: " + var17);
          }
@@ -4728,7 +4649,7 @@ public final class MainActivity extends Activity {
          }
 
          File var5 = this.copyFile(var16, new File(var4, "ubuntu-gnome-v22-ext4-control.img"), 9126805504L, false);
-         String var6 = hex(sha256File(var5));
+         String var6 = Digest.hex(Digest.sha256File(var5));
          PrintWriter var7 = new PrintWriter(new FileOutputStream(var1, false));
 
          try {
@@ -4800,11 +4721,11 @@ public final class MainActivity extends Activity {
             var4.println("CONTROL_DISK_PRESENT=" + var14.isFile());
             var4.println("BOOT_CARRIER_PRESENT=" + var13.isFile());
             if (var14.isFile() && var14.length() == 9126805504L) {
-               if (!V22_EXT4_CONTROL_MEDIA_SHA256.equals(hex(sha256File(var14)))) {
+               if (!V22_EXT4_CONTROL_MEDIA_SHA256.equals(Digest.hex(Digest.sha256File(var14)))) {
                   var4.println("EXT4_BLOCK_IO=BLOCKED");
                   var4.println("REASON=V22 control disk hash mismatch");
                } else if (var13.isFile() && var13.length() != 0L) {
-                  var4.println("CONTROL_DISK_SHA256=" + hex(sha256File(var14)));
+                  var4.println("CONTROL_DISK_SHA256=" + Digest.hex(Digest.sha256File(var14)));
                   var4.println("BOOT_CARRIER_BYTES=" + var13.length());
                   var4.println("EXT4_BLOCK_IO=API_READY_GUEST_CARRIER_PENDING_HASH");
                   var4.println("VM_LAUNCH=NOT_ATTEMPTED");
@@ -4961,7 +4882,7 @@ public final class MainActivity extends Activity {
                   Socket var5 = var3.accept();
                   var5.setTcpNoDelay(true);
                   var5.setSoTimeout(45000);
-                  byte[] var6 = readExactly(var5.getInputStream(), var1.length());
+                  byte[] var6 = IoUtil.readExactly(var5.getInputStream(), var1.length());
                   if (!var1.equals(new String(var6, StandardCharsets.US_ASCII))) {
                      throw new SecurityException("KD bridge capability token mismatch");
                   }
@@ -5047,20 +4968,6 @@ public final class MainActivity extends Activity {
       }
    }
 
-   private static byte[] readExactly(InputStream var0, int var1) throws Exception {
-      byte[] var2 = new byte[var1];
-
-      int var4;
-      for(int var3 = 0; var3 < var1; var3 += var4) {
-         var4 = var0.read(var2, var3, var1 - var3);
-         if (var4 < 0) {
-            throw new EOFException("short bridge capability token");
-         }
-      }
-
-      return var2;
-   }
-
    private void startProductKdBridgePumps(InputStream var1, OutputStream var2, Socket var3) {
       File var4 = new File(this.getExternalFilesDir((String)null), "product-kd-bridge-rx.bin");
       File var5 = new File(this.getExternalFilesDir((String)null), "product-kd-bridge-tx.bin");
@@ -5109,7 +5016,7 @@ public final class MainActivity extends Activity {
 
             var4x.close();
          } catch (Throwable var12) {
-            closeQuietly(var3);
+            IoUtil.closeQuietly(var3);
          }
 
       }, "WinAVF-product-kd-rx")).start();
@@ -5157,7 +5064,7 @@ public final class MainActivity extends Activity {
 
             var3x.close();
          } catch (Throwable var11) {
-            closeQuietly(var3);
+            IoUtil.closeQuietly(var3);
          }
 
       }, "WinAVF-product-kd-tx")).start();
@@ -5177,18 +5084,8 @@ public final class MainActivity extends Activity {
       } catch (Throwable var3) {
       }
 
-      closeQuietly(this.activeKdBridgeSocket);
+      IoUtil.closeQuietly(this.activeKdBridgeSocket);
       this.show("Product KD bridge stop requested.");
-   }
-
-   private static void closeQuietly(Socket var0) {
-      if (var0 != null) {
-         try {
-            var0.close();
-         } catch (Throwable var2) {
-         }
-
-      }
    }
 
    private static void writeBridgeFailure(File var0, String var1) {
@@ -5221,7 +5118,7 @@ public final class MainActivity extends Activity {
 
       try {
          File var3 = new File(this.getExternalFilesDir((String)null), "win11-gop-ebs-r1.img");
-         byte[] var4 = readFat32File(var3, "EFI", "MICROSOFT", "BOOT", "BCD");
+         byte[] var4 = readEspFile(var3, "EFI", "MICROSOFT", "BOOT", "BCD");
          FileOutputStream var5 = new FileOutputStream(var2, false);
 
          try {
@@ -5244,7 +5141,7 @@ public final class MainActivity extends Activity {
             var13.println("scope=READ_ONLY_PRODUCT_BASELINE_BCD_EXPORT");
             var13.println("imageBytes=" + var3.length());
             var13.println("bcdBytes=" + var4.length);
-            var13.println("bcdSha256=" + hex(sha256(var4)));
+            var13.println("bcdSha256=" + Digest.hex(Digest.sha256(var4)));
             var13.println("result=PASS");
          } catch (Throwable var10) {
             try {
@@ -5263,171 +5160,6 @@ public final class MainActivity extends Activity {
          this.show("Read-only product BCD export failed: " + rootMessage(var12));
       }
 
-   }
-
-   private static byte[] readFat32File(File var0, String... var1) throws Exception {
-      RandomAccessFile var2 = new RandomAccessFile(var0, "r");
-
-      byte[] var20;
-      try {
-         var2.seek(1048576L);
-         byte[] var3 = new byte[512];
-         var2.readFully(var3);
-         if (var3[82] != 70 || var3[83] != 65 || var3[84] != 84 || var3[85] != 51 || var3[86] != 50) {
-            throw new IllegalStateException("Expected FAT32 partition");
-         }
-
-         int var4 = u16(var3, 11);
-         int var5 = var3[13] & 255;
-         int var6 = u16(var3, 14);
-         int var7 = var3[16] & 255;
-         long var8 = u32(var3, 36);
-         long var10 = u32(var3, 44);
-         long var12 = (long)var4 * (long)var5;
-         long var14 = 1048576L + (long)var6 * (long)var4;
-         long var16 = 1048576L + ((long)var6 + (long)var7 * var8) * (long)var4;
-         int var18 = 0;
-
-         while(true) {
-            if (var18 >= var1.length) {
-               throw new IllegalStateException("Empty FAT path");
-            }
-
-            FatEntry var19 = findFatEntry(var2, var14, var16, var12, var10, var1[var18]);
-            if (var19 == null) {
-               throw new IllegalStateException("FAT entry not found: " + var1[var18]);
-            }
-
-            if (var18 == var1.length - 1) {
-               var20 = readFatFile(var2, var14, var16, var12, var19.cluster, var19.size);
-               break;
-            }
-
-            if ((var19.attributes & 16) == 0) {
-               throw new IllegalStateException("Expected directory: " + var1[var18]);
-            }
-
-            var10 = var19.cluster;
-            ++var18;
-         }
-      } catch (Throwable var22) {
-         try {
-            var2.close();
-         } catch (Throwable var21) {
-            var22.addSuppressed(var21);
-         }
-
-         throw var22;
-      }
-
-      var2.close();
-      return var20;
-   }
-
-   private static FatEntry findFatEntry(RandomAccessFile var0, long var1, long var3, long var5, long var7, String var9) throws Exception {
-      for(long var13 : walkFatChain(var0, var1, var7)) {
-         byte[] var15 = new byte[(int)var5];
-         var0.seek(var3 + (var13 - 2L) * var5);
-         var0.readFully(var15);
-         String[] var16 = new String[21];
-
-         for(int var17 = 0; var17 < var15.length; var17 += 32) {
-            int var18 = var15[var17] & 255;
-            if (var18 == 0) {
-               return null;
-            }
-
-            if (var18 == 229) {
-               Arrays.fill(var16, (Object)null);
-            } else if ((var15[var17 + 11] & 255) == 15) {
-               int var19 = var15[var17] & 31;
-               if (var19 > 0 && var19 < var16.length) {
-                  var16[var19] = decodeFatLongNamePart(var15, var17);
-               }
-            } else {
-               String var26 = (new String(var15, var17, 8, StandardCharsets.US_ASCII)).trim();
-               String var20 = (new String(var15, var17 + 8, 3, StandardCharsets.US_ASCII)).trim();
-               String var21 = var20.isEmpty() ? var26 : var26 + "." + var20;
-               StringBuilder var22 = new StringBuilder();
-
-               for(int var23 = 1; var23 < var16.length; ++var23) {
-                  if (var16[var23] != null) {
-                     var22.append(var16[var23]);
-                  }
-               }
-
-               String var27 = var22.length() == 0 ? var21 : var22.toString();
-               Arrays.fill(var16, (Object)null);
-               if (var9.equalsIgnoreCase(var27) || var9.equalsIgnoreCase(var21)) {
-                  long var24 = (long)u16(var15, var17 + 20) << 16 | (long)u16(var15, var17 + 26);
-                  return new FatEntry(var24, u32(var15, var17 + 28), var15[var17 + 11] & 255);
-               }
-            }
-         }
-      }
-
-      return null;
-   }
-
-   private static String decodeFatLongNamePart(byte[] var0, int var1) {
-      int[] var2 = new int[]{1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30};
-      StringBuilder var3 = new StringBuilder();
-
-      for(int var7 : var2) {
-         int var8 = u16(var0, var1 + var7);
-         if (var8 == 0 || var8 == 65535) {
-            break;
-         }
-
-         var3.append((char)var8);
-      }
-
-      return var3.toString();
-   }
-
-   private static long[] walkFatChain(RandomAccessFile var0, long var1, long var3) throws Exception {
-       ArrayList<Long> var5 = new ArrayList<>();
-      HashSet var6 = new HashSet();
-
-      byte[] var9;
-      for(long var7 = var3; var7 >= 2L && var7 < 268435448L; var7 = u32(var9, 0) & 268435455L) {
-         if (!var6.add(var7)) {
-            throw new IllegalStateException("FAT loop at " + var7);
-         }
-
-         var5.add(var7);
-         var0.seek(var1 + var7 * 4L);
-         var9 = new byte[4];
-         var0.readFully(var9);
-      }
-
-      return var5.stream().mapToLong(Long::longValue).toArray();
-   }
-
-   private static byte[] readFatFile(RandomAccessFile var0, long var1, long var3, long var5, long var7, long var9) throws Exception {
-      if (var9 > 2147483647L) {
-         throw new IllegalStateException("Read-only export is bounded to 2 GiB");
-      } else {
-         byte[] var11 = new byte[(int)var9];
-         int var12 = 0;
-
-         for(long var16 : walkFatChain(var0, var1, var7)) {
-            int var18 = (int)Math.min(var5, var9 - (long)var12);
-            if (var18 <= 0) {
-               break;
-            }
-
-            var0.seek(var3 + (var16 - 2L) * var5);
-            var0.readFully(var11, var12, var18);
-            var12 += var18;
-         }
-
-         if ((long)var12 != var9) {
-            throw new IllegalStateException("FAT chain shorter than file size");
-         } else {
-            return var11;
-         }
-      }
    }
 
    private void startVsockHelloProbe(Object var1) {
@@ -5963,9 +5695,9 @@ public final class MainActivity extends Activity {
 
                      try {
                         byte[] var11 = new byte[16];
-                        readExactly(var10, var11);
+                        IoUtil.readExactly(var10, var11);
                         ByteBuffer var12 = ByteBuffer.wrap(var11).order(ByteOrder.LITTLE_ENDIAN);
-                        if (var11[0] != 85 || var11[1] != 65 || var11[2] != 86 || var11[3] != 70 || u16(var11, 4) != 1 || u16(var11, 6) != 2 || var12.getInt(8) != 48000 || u16(var11, 12) != 1) {
+                        if (var11[0] != 85 || var11[1] != 65 || var11[2] != 86 || var11[3] != 70 || ByteCodec.u16(var11, 4) != 1 || ByteCodec.u16(var11, 6) != 2 || var12.getInt(8) != 48000 || ByteCodec.u16(var11, 12) != 1) {
                            throw new IllegalStateException("unexpected guest PCM header");
                         }
 
@@ -6113,17 +5845,6 @@ public final class MainActivity extends Activity {
             }, "WinAVF-ubuntu-audio-bridge")).start();
          }
       }
-   }
-
-   private static void readExactly(InputStream var0, byte[] var1) throws Exception {
-      int var3;
-      for(int var2 = 0; var2 < var1.length; var2 += var3) {
-         var3 = var0.read(var1, var2, var1.length - var2);
-         if (var3 < 0) {
-            throw new IllegalStateException("short guest PCM header");
-         }
-      }
-
    }
 
    private void startEscInputProbe(Object var1) {
@@ -6285,7 +6006,7 @@ public final class MainActivity extends Activity {
       File var4 = new File(var1, "active-image-patch.bin");
       if (var3.isFile()) {
          if (var4.exists()) {
-            if (!patchTargetsBaseline(var4, var2)) {
+            if (!ImagePatch.targetsBaseline(var4, var2)) {
                throw new IllegalStateException("An earlier image patch is still active; rollback it before applying another patch");
             }
 
@@ -6299,7 +6020,7 @@ public final class MainActivity extends Activity {
          this.copyFile(var3, var4, -1L, true);
 
          try {
-            applyPatch(var4, var2, false);
+            ImagePatch.apply(var4, var2, false);
             if (!var3.delete()) {
                this.show("Patch applied; external staging copy could not be deleted.");
             }
@@ -6327,7 +6048,7 @@ public final class MainActivity extends Activity {
             throw new IllegalStateException("No active image patch exists to roll back");
          }
 
-         applyPatch(var4, var15, true);
+         ImagePatch.apply(var4, var15, true);
          if (!var4.delete()) {
             throw new IllegalStateException("Rollback passed but the active patch record could not be removed");
          }
@@ -6336,7 +6057,7 @@ public final class MainActivity extends Activity {
 
          try {
             var5.println("RESULT=PASS");
-            var5.println("BASELINE_SHA256=" + hex(sha256File(var15)));
+            var5.println("BASELINE_SHA256=" + Digest.hex(Digest.sha256File(var15)));
          } catch (Throwable var12) {
             try {
                var5.close();
@@ -6377,201 +6098,7 @@ public final class MainActivity extends Activity {
 
    }
 
-   private static int readLittleEndianInt(RandomAccessFile var0) throws Exception {
-      int var1 = var0.readUnsignedByte();
-      int var2 = var0.readUnsignedByte();
-      int var3 = var0.readUnsignedByte();
-      int var4 = var0.readUnsignedByte();
-      return var1 | var2 << 8 | var3 << 16 | var4 << 24;
-   }
 
-   private static long readLittleEndianLong(RandomAccessFile var0) throws Exception {
-      return (long)readLittleEndianInt(var0) & 4294967295L | (long)readLittleEndianInt(var0) << 32;
-   }
-
-   private static boolean patchTargetsBaseline(File var0, File var1) throws Exception {
-      RandomAccessFile var2 = new RandomAccessFile(var0, "r");
-
-      boolean var9;
-      label41: {
-         label40: {
-            boolean var5;
-            try {
-               byte[] var3 = new byte[IMAGE_PATCH_MAGIC.length];
-               var2.readFully(var3);
-               if (!Arrays.equals(var3, IMAGE_PATCH_MAGIC) || readLittleEndianInt(var2) != 1) {
-                  var9 = false;
-                  break label41;
-               }
-
-               if (readLittleEndianLong(var2) != var1.length()) {
-                  var9 = false;
-                  break label40;
-               }
-
-               byte[] var4 = new byte[32];
-               var2.readFully(var4);
-               var5 = Arrays.equals(var4, sha256File(var1));
-            } catch (Throwable var7) {
-               try {
-                  var2.close();
-               } catch (Throwable var6) {
-                  var7.addSuppressed(var6);
-               }
-
-               throw var7;
-            }
-
-            var2.close();
-            return var5;
-         }
-
-         var2.close();
-         return var9;
-      }
-
-      var2.close();
-      return var9;
-   }
-
-   private static void applyPatch(File var0, File var1, boolean var2) throws Exception {
-      RandomAccessFile var3 = new RandomAccessFile(var0, "r");
-
-      try {
-         byte[] var4 = new byte[IMAGE_PATCH_MAGIC.length];
-         var3.readFully(var4);
-         if (!Arrays.equals(var4, IMAGE_PATCH_MAGIC)) {
-            throw new IllegalStateException("Unsupported image patch magic");
-         }
-
-         if (readLittleEndianInt(var3) != 1) {
-            throw new IllegalStateException("Unsupported image patch version");
-         }
-
-         long var5 = readLittleEndianLong(var3);
-         if (var5 != var1.length()) {
-            throw new IllegalStateException("Patch targets a different runtime image size");
-         }
-
-         byte[] var7 = new byte[32];
-         var3.readFully(var7);
-         int var8 = readLittleEndianInt(var3);
-         if (var8 < 1 || var8 > 4096) {
-            throw new IllegalStateException("Invalid image patch range count");
-         }
-
-         PatchRange[] var9 = new PatchRange[var8];
-
-         for(int var10 = 0; var10 < var8; ++var10) {
-            long var11 = readLittleEndianLong(var3);
-            int var13 = readLittleEndianInt(var3);
-            if (var11 < 0L || var13 < 1 || var13 > 67108864 || var11 > var5 - (long)var13) {
-               throw new IllegalStateException("Invalid image patch range");
-            }
-
-            byte[] var14 = new byte[32];
-            byte[] var15 = new byte[32];
-            var3.readFully(var14);
-            var3.readFully(var15);
-            long var16 = var3.getFilePointer();
-            var3.seek(var16 + (long)var13);
-            long var18 = var3.getFilePointer();
-            var3.seek(var18 + (long)var13);
-            var9[var10] = new PatchRange(var11, var13, var14, var15, var16, var18);
-         }
-
-         if (var3.getFilePointer() != var3.length()) {
-            throw new IllegalStateException("Trailing data in image patch");
-         }
-
-         if (!var2 && !Arrays.equals(var7, sha256File(var1))) {
-            throw new IllegalStateException("Runtime image does not match the patch baseline");
-         }
-
-         RandomAccessFile var25 = new RandomAccessFile(var1, "rw");
-
-         try {
-            for(PatchRange var28 : var9) {
-               byte[] var29 = var2 ? var28.newHash : var28.oldHash;
-               byte[] var30 = var2 ? var28.oldHash : var28.newHash;
-               byte[] var17 = new byte[var28.length];
-               var25.seek(var28.offset);
-               var25.readFully(var17);
-               if (!Arrays.equals(var29, sha256(var17))) {
-                  throw new IllegalStateException("Patch range state hash mismatch at " + var28.offset);
-               }
-
-               long var31 = var2 ? var28.oldDataOffset : var28.newDataOffset;
-               byte[] var20 = new byte[var28.length];
-               var3.seek(var31);
-               var3.readFully(var20);
-               if (!Arrays.equals(var30, sha256(var20))) {
-                  throw new IllegalStateException("Patch payload hash mismatch at " + var28.offset);
-               }
-
-               var25.seek(var28.offset);
-               var25.write(var20);
-               var25.getFD().sync();
-               var25.seek(var28.offset);
-               var25.readFully(var17);
-               if (!Arrays.equals(var30, sha256(var17))) {
-                  throw new IllegalStateException("Patch read-back verification failed at " + var28.offset);
-               }
-            }
-         } catch (Throwable var23) {
-            try {
-               var25.close();
-            } catch (Throwable var22) {
-               var23.addSuppressed(var22);
-            }
-
-            throw var23;
-         }
-
-         var25.close();
-         if (var2 && !Arrays.equals(var7, sha256File(var1))) {
-            throw new IllegalStateException("Rollback did not restore the baseline hash");
-         }
-      } catch (Throwable var24) {
-         try {
-            var3.close();
-         } catch (Throwable var21) {
-            var24.addSuppressed(var21);
-         }
-
-         throw var24;
-      }
-
-      var3.close();
-   }
-
-   private static byte[] sha256(byte[] var0) throws Exception {
-      return MessageDigest.getInstance("SHA-256").digest(var0);
-   }
-
-   private static byte[] sha256File(File var0) throws Exception {
-      MessageDigest var1 = MessageDigest.getInstance("SHA-256");
-      byte[] var2 = new byte[1048576];
-      BufferedInputStream var3 = new BufferedInputStream(new FileInputStream(var0));
-
-      int var4;
-      try {
-         while((var4 = ((InputStream)var3).read(var2)) >= 0) {
-            var1.update(var2, 0, var4);
-         }
-      } catch (Throwable var7) {
-         try {
-            ((InputStream)var3).close();
-         } catch (Throwable var6) {
-            var7.addSuppressed(var6);
-         }
-
-         throw var7;
-      }
-
-      ((InputStream)var3).close();
-      return var1.digest();
-   }
 
    private void runBootflowProbe(Object var1) {
       (new Thread(() -> {
@@ -6983,114 +6510,17 @@ public final class MainActivity extends Activity {
       }, "WinAVF-winpe-marker")).start();
    }
 
-   private static int u16(byte[] var0, int var1) {
-      return var0[var1] & 255 | (var0[var1 + 1] & 255) << 8;
-   }
-
-   private static long u32(byte[] var0, int var1) {
-      return (long)u16(var0, var1) | (long)u16(var0, var1 + 2) << 16;
-   }
-
-   private static String readWinpeMarker(File var0) throws Exception {
-      RandomAccessFile var1 = new RandomAccessFile(var0, "r");
-
-      Object var21;
-      label96: {
-         Object var34;
-         label95: {
-            String var36;
-            label94: {
-               Object var32;
-               try {
-                  byte[] var2 = new byte[512];
-                  var1.seek(1048576L);
-                  var1.readFully(var2);
-                  int var3 = u16(var2, 11);
-                  int var4 = var2[13] & 255;
-                  int var5 = u16(var2, 14);
-                  int var6 = var2[16] & 255;
-                  long var7 = u32(var2, 36);
-                  long var9 = u32(var2, 44);
-                  long var11 = 1048576L + (long)var5 * (long)var3;
-                  long var13 = 1048576L + ((long)var5 + (long)var6 * var7) * (long)var3;
-                  int var15 = var3 * var4;
-                  long var16 = var9;
-
-                  for(int var18 = 0; var18 < 1024 && var16 >= 2L && var16 < 268435448L; ++var18) {
-                     byte[] var19 = new byte[var15];
-                     var1.seek(var13 + (var16 - 2L) * (long)var15);
-                     var1.readFully(var19);
-
-                     for(int var20 = 0; var20 + 32 <= var19.length; var20 += 32) {
-                        if (var19[var20] == 0) {
-                           var21 = null;
-                           break label96;
-                        }
-
-                        if ((var19[var20] & 255) != 229 && (var19[var20 + 11] & 255) != 15) {
-                           new String(var19, var20, 8, StandardCharsets.US_ASCII);
-                           String var22 = new String(var19, var20 + 8, 3, StandardCharsets.US_ASCII);
-                           if (var22.equals("TXT")) {
-                              long var23 = (long)u16(var19, var20 + 20) << 16 | (long)u16(var19, var20 + 26);
-                              int var25 = (int)u32(var19, var20 + 28);
-                              if (var25 <= 0 || var25 > 4096) {
-                                 var34 = null;
-                                 break label95;
-                              }
-
-                              byte[] var26 = new byte[var25];
-
-                              byte[] var29 = new byte[4];
-                              for(int var27 = 0; var23 >= 2L && var23 < 268435448L && var27 < var25; var23 = u32(var29, 0) & 268435455L) {
-                                 int var28 = Math.min(var15, var25 - var27);
-                                 var1.seek(var13 + (var23 - 2L) * (long)var15);
-                                 var1.readFully(var26, var27, var28);
-                                 var27 += var28;
-                                 var29 = new byte[4];
-                                 var1.seek(var11 + var23 * 4L);
-                                 var1.readFully(var29);
-                              }
-
-                              String var35 = new String(var26, StandardCharsets.US_ASCII);
-                              if (var35.contains("stage=WINPE_USERLAND_")) {
-                                 var36 = var35;
-                                 break label94;
-                              }
-                           }
-                        }
-                     }
-
-                     byte[] var33 = new byte[4];
-                     var1.seek(var11 + var16 * 4L);
-                     var1.readFully(var33);
-                     var16 = u32(var33, 0) & 268435455L;
-                  }
-
-                  var32 = null;
-               } catch (Throwable var31) {
-                  try {
-                     var1.close();
-                  } catch (Throwable var30) {
-                     var31.addSuppressed(var30);
-                  }
-
-                  throw var31;
-               }
-
-               var1.close();
-               return (String)var32;
-            }
-
-            var1.close();
-            return var36;
+   /** Returns the WinPE userland marker text from the ESP root, or null. */
+   private static String readWinpeMarker(File disk) throws Exception {
+      try (var volume = Fat32Volume.open(disk)) {
+         for (String name : volume.rootFileNames("TXT")) {
+            byte[] body = volume.readRootFileByExtension(name, "TXT", 4096);
+            if (body == null) continue;
+            String text = new String(body, StandardCharsets.US_ASCII);
+            if (text.contains("stage=WINPE_USERLAND_")) return text;
          }
-
-         var1.close();
-         return (String)var34;
+         return null;
       }
-
-      var1.close();
-      return (String)var21;
    }
 
    private void auditPersistentBootWitness() {
@@ -7103,14 +6533,14 @@ public final class MainActivity extends Activity {
             throw new IllegalStateException("No disposable persistent-witness disk is available");
          }
 
-         byte[] var4 = readFatRootFile(var3, "SETUPACT", "LOG", 16777216);
-         byte[] var5 = readFatRootFile(var3, "SETUPERR", "LOG", 16777216);
+         byte[] var4 = readEspRootFile(var3, "SETUPACT", "LOG", 16777216);
+         byte[] var5 = readEspRootFile(var3, "SETUPERR", "LOG", 16777216);
          PrintWriter var6 = new PrintWriter(new FileOutputStream(var1, false));
 
          try {
             var6.println("scope=POST_STOP_OFFLINE_DISPOSABLE_DISK_INSPECTION");
             var6.println("diskBytes=" + var3.length());
-            var6.println("diskSha256=" + hex(sha256File(var3)));
+            var6.println("diskSha256=" + Digest.hex(Digest.sha256File(var3)));
             boolean var7 = false;
             if (var4 != null && var4.length > 0) {
                File var8 = new File(this.getExternalFilesDir((String)null), "persistent-witness-setupact.log");
@@ -7130,7 +6560,7 @@ public final class MainActivity extends Activity {
 
                var9.close();
                var6.println("SETUPACT_LOG_BYTES=" + var4.length);
-               String var10001 = hex(MessageDigest.getInstance("SHA-256").digest(var4));
+               String var10001 = Digest.hex(MessageDigest.getInstance("SHA-256").digest(var4));
                var6.println("SETUPACT_LOG_SHA256=" + var10001);
                var7 = true;
             }
@@ -7153,7 +6583,7 @@ public final class MainActivity extends Activity {
 
                var22.close();
                var6.println("SETUPERR_LOG_BYTES=" + var5.length);
-               String var23 = hex(MessageDigest.getInstance("SHA-256").digest(var5));
+               String var23 = Digest.hex(MessageDigest.getInstance("SHA-256").digest(var5));
                var6.println("SETUPERR_LOG_SHA256=" + var23);
                var7 = true;
             }
@@ -7221,7 +6651,7 @@ public final class MainActivity extends Activity {
             throw new IllegalStateException("Immutable baseline is unavailable");
          }
 
-         String var9 = hex(sha256File(var8));
+         String var9 = Digest.hex(Digest.sha256File(var8));
          if (!"2582CAE49FDB3BCD7229280DC8595E5407460BCBADED8FF97AEC73D8211278A7".equals(var9)) {
             throw new IllegalStateException("Immutable baseline hash mismatch after cleanup");
          }
@@ -7255,107 +6685,6 @@ public final class MainActivity extends Activity {
          this.show("Persistent witness cleanup failed: " + rootMessage(var16));
       }
 
-   }
-
-   private static byte[] readFatRootFile(File var0, String var1, String var2, int var3) throws Exception {
-      RandomAccessFile var4 = new RandomAccessFile(var0, "r");
-
-      Object var39;
-      label109: {
-         byte[] var40;
-         label108: {
-            Object var37;
-            try {
-               byte[] var5 = new byte[512];
-               var4.seek(1048576L);
-               var4.readFully(var5);
-               int var6 = u16(var5, 11);
-               int var7 = var5[13] & 255;
-               int var8 = u16(var5, 14);
-               int var9 = var5[16] & 255;
-               long var10 = u32(var5, 36);
-               long var12 = u32(var5, 44);
-               if (var6 != 512 || var7 == 0 || var9 != 2 || var12 < 2L) {
-                  throw new IllegalStateException("Unexpected FAT32 geometry");
-               }
-
-               long var14 = 1048576L + (long)var8 * (long)var6;
-               long var16 = 1048576L + ((long)var8 + (long)var9 * var10) * (long)var6;
-               int var18 = var6 * var7;
-               long var19 = var12;
-
-               for(int var21 = 0; var21 < 1024 && var19 >= 2L && var19 < 268435448L; ++var21) {
-                  byte[] var22 = new byte[var18];
-                  var4.seek(var16 + (var19 - 2L) * (long)var18);
-                  var4.readFully(var22);
-
-                  for(int var23 = 0; var23 + 32 <= var22.length; var23 += 32) {
-                     if (var22[var23] == 0) {
-                        var39 = null;
-                        break label109;
-                     }
-
-                     if ((var22[var23] & 255) != 229 && (var22[var23 + 11] & 255) != 15 && (var22[var23 + 11] & 16) == 0) {
-                        String var24 = (new String(var22, var23, 8, StandardCharsets.US_ASCII)).trim();
-                        String var25 = (new String(var22, var23 + 8, 3, StandardCharsets.US_ASCII)).trim();
-                        if (var1.equals(var24) && var2.equals(var25)) {
-                           long var26 = (long)u16(var22, var23 + 20) << 16 | (long)u16(var22, var23 + 26);
-                           long var28 = u32(var22, var23 + 28);
-                           if (var28 > 0L && var28 <= (long)var3) {
-                              byte[] var30 = new byte[(int)var28];
-                              int var31 = 0;
-
-                              for(int var32 = 0; var32 < 4096 && var26 >= 2L && var26 < 268435448L && (long)var31 < var28; ++var32) {
-                                 int var33 = Math.min(var18, (int)var28 - var31);
-                                 var4.seek(var16 + (var26 - 2L) * (long)var18);
-                                 var4.readFully(var30, var31, var33);
-                                 var31 += var33;
-                                 byte[] var34 = new byte[4];
-                                 var4.seek(var14 + var26 * 4L);
-                                 var4.readFully(var34);
-                                 var26 = u32(var34, 0) & 268435455L;
-                              }
-
-                              if ((long)var31 != var28) {
-                                 throw new IllegalStateException("Witness FAT chain ended before file size");
-                              }
-
-                              var40 = var30;
-                              break label108;
-                           }
-
-                           throw new IllegalStateException("Witness log has invalid or excessive size: " + var28);
-                        }
-                     }
-                  }
-
-                  byte[] var38 = new byte[4];
-                  var4.seek(var14 + var19 * 4L);
-                  var4.readFully(var38);
-                  var19 = u32(var38, 0) & 268435455L;
-               }
-
-               var37 = null;
-            } catch (Throwable var36) {
-               try {
-                  var4.close();
-               } catch (Throwable var35) {
-                  var36.addSuppressed(var35);
-               }
-
-               throw var36;
-            }
-
-            var4.close();
-            return (byte[])var37;
-         }
-
-         var4.close();
-         return var40;
-      }
-
-      var4.close();
-      return (byte[])var39;
    }
 
    private File copyAsset(String var1, File var2, long var3) throws Exception {
@@ -7406,7 +6735,7 @@ public final class MainActivity extends Activity {
    }
 
    private File copyVerifiedAsset(String var1, File var2, long var3, String var5) throws Exception {
-      if (var2.isFile() && var2.length() == var3 && var5.equalsIgnoreCase(hex(sha256File(var2)))) {
+      if (var2.isFile() && var2.length() == var3 && var5.equalsIgnoreCase(Digest.hex(Digest.sha256File(var2)))) {
          return var2;
       } else {
          File var6 = var2.getParentFile();
@@ -7459,7 +6788,7 @@ public final class MainActivity extends Activity {
                   var8.close();
                }
 
-               if (var7.length() == var3 && var5.equalsIgnoreCase(hex(sha256File(var7)))) {
+               if (var7.length() == var3 && var5.equalsIgnoreCase(Digest.hex(Digest.sha256File(var7)))) {
                   if (var2.exists() && !var2.delete()) {
                      var7.delete();
                      throw new IllegalStateException("Cannot replace an old platform update payload.");
@@ -7524,50 +6853,6 @@ public final class MainActivity extends Activity {
             return var2;
          }
       }
-   }
-
-   private static String readText(File var0) {
-      try {
-         FileInputStream var1 = new FileInputStream(var0);
-
-         String var4;
-         try {
-            byte[] var2 = new byte[(int)Math.min(var0.length(), 128L)];
-            int var3 = ((InputStream)var1).read(var2);
-            var4 = var3 > 0 ? new String(var2, 0, var3, StandardCharsets.US_ASCII) : "";
-         } catch (Throwable var6) {
-            try {
-               ((InputStream)var1).close();
-            } catch (Throwable var5) {
-               var6.addSuppressed(var5);
-            }
-
-            throw var6;
-         }
-
-         ((InputStream)var1).close();
-         return var4;
-      } catch (Exception var7) {
-         return "";
-      }
-   }
-
-   private static void writeText(File var0, String var1) throws Exception {
-      FileOutputStream var2 = new FileOutputStream(var0, false);
-
-      try {
-         var2.write(var1.getBytes(StandardCharsets.US_ASCII));
-      } catch (Throwable var6) {
-         try {
-            var2.close();
-         } catch (Throwable var5) {
-            var6.addSuppressed(var5);
-         }
-
-         throw var6;
-      }
-
-      var2.close();
    }
 
    private File ensureSparseTarget(File var1) throws Exception {
@@ -7641,7 +6926,6 @@ public final class MainActivity extends Activity {
 
    static {
       CONSOLE_BINARY_ECHO_READY = "WINAVF_ECHO_READY\n".getBytes(StandardCharsets.US_ASCII);
-      IMAGE_PATCH_MAGIC = "WAVFPAT1".getBytes(StandardCharsets.US_ASCII);
       V22_EXT4_CONTROL_MEDIA_SHA256 = "F3C9498D0E4EFFAB2E38C75E523492A8CDD CFA9DC6CB3DDF1B48632E26C57D2C".replace(" ", "");
    }
 
@@ -7659,33 +6943,4 @@ public final class MainActivity extends Activity {
    }
 
 
-   private static final class FatEntry {
-      final long cluster;
-      final long size;
-      final int attributes;
-
-      FatEntry(long var1, long var3, int var5) {
-         this.cluster = var1;
-         this.size = var3;
-         this.attributes = var5;
-      }
-   }
-
-   private static final class PatchRange {
-      final long offset;
-      final long oldDataOffset;
-      final long newDataOffset;
-      final int length;
-      final byte[] oldHash;
-      final byte[] newHash;
-
-      PatchRange(long var1, int var3, byte[] var4, byte[] var5, long var6, long var8) {
-         this.offset = var1;
-         this.length = var3;
-         this.oldHash = var4;
-         this.newHash = var5;
-         this.oldDataOffset = var6;
-         this.newDataOffset = var8;
-      }
-   }
 }
