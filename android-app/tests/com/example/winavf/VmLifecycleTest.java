@@ -1,4 +1,6 @@
 package com.example.winavf;
+
+import com.example.winavf.runtime.VmLifecycle;
 public final class VmLifecycleTest {
     private static void check(boolean value) { if(!value) throw new AssertionError(); }
     public static void main(String[] args) {
@@ -12,10 +14,25 @@ public final class VmLifecycleTest {
         check(model.beginStart()); model.attach(current);
         check(!model.stopped(old,"stale"));
         model.reconcile(current,"RUNNING",true); check(model.busy());
+        check(!model.beginCompatibilityProbe());
         model.failed(current,"real error"); check(!model.busy());
         model.reconcile(null,"STOPPED",true); check(model.state()==VmLifecycle.State.READY);
         model.reconcile(null,"",false); check(model.state()==VmLifecycle.State.NOT_CONFIGURED);
         model.reconcile(current,"unexpected",true); check(model.state()==VmLifecycle.State.ERROR);
+        check(model.beginCompatibilityProbe());
+        VmLifecycle recreated=new VmLifecycle();
+        try {
+            check(VmLifecycle.compatibilityProbeActive());
+            check(!recreated.beginCompatibilityProbe());
+            check(!recreated.beginStart());
+            check(!recreated.beginStorageMutation());
+        } finally {
+            VmLifecycle.endCompatibilityProbe();
+        }
+        check(recreated.beginStorageMutation());
+        check(!recreated.beginCompatibilityProbe());
+        recreated.endStorageMutation();
+        check(recreated.beginStart());
         System.out.println("VM_LIFECYCLE_TEST=PASS");
     }
 }

@@ -15,6 +15,7 @@ final class GuestClipboard implements AutoCloseable {
     private final Activity activity;
     private final Object vm;
     private final ClipboardManager clipboard;
+    private final String guestLabel;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Object lock = new Object();
     private volatile boolean closed, foreground;
@@ -26,8 +27,14 @@ final class GuestClipboard implements AutoCloseable {
     private final Runnable publish = () -> publishLocal(false);
 
     GuestClipboard(Activity activity, Object vm) {
+        this(activity, vm, "Ubuntu");
+    }
+    GuestClipboard(Activity activity, Object vm, String guestLabel) {
+        if (guestLabel == null || guestLabel.isBlank() || guestLabel.length() > 64)
+            throw new IllegalArgumentException("Guest clipboard label");
         this.activity = activity;
         this.vm = vm;
+        this.guestLabel = guestLabel;
         clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
         foreground = activity.hasWindowFocus();
         clipboard.addPrimaryClipChangedListener(changed);
@@ -90,7 +97,7 @@ final class GuestClipboard implements AutoCloseable {
                         if (!closed && foreground && socket == connection &&
                             !Objects.equals(message.text, lastAndroidText)) {
                             lastAndroidText = message.text;
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Ubuntu", message.text));
+                            clipboard.setPrimaryClip(ClipData.newPlainText(guestLabel, message.text));
                         }
                     });
                 }

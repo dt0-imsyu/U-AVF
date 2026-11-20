@@ -1,62 +1,140 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
-// Copyright (c) 2026 U-AVF project owner (GitHub: dt0-imsyu).
-// See LICENSE-UAVF.txt and LICENSE_SCOPE.md; earlier/third-party rights preserved.
 package com.example.winavf;
 
 import android.content.Context;
-import android.content.res.ColorStateList;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.view.Gravity;
-import android.widget.ProgressBar;
+import android.view.View;
+import android.widget.TextView;
 
-/** Figma294:41/80. Each result comes from the caller's actual probe evidence. */
+/** Local AVF check and results of the disposable guest. */
 final class FigmaCompatibilityView extends FigmaCanvas {
-    FigmaCompatibilityView(Context context,boolean running,boolean passed,int completed,String[] results,
-            String boot,String vsock,String graphics,Runnable repeat,Runnable proceed,Runnable back,Runnable share,Runnable skip) {
-        super(context,"create-background.png",false,1460);
-        header(running?"Checking this device":"Compatibility test",running?"Testing the capabilities needed to run U-AVF.":passed?"Launch prerequisites verified. Runtime checks are shown separately.":"Some requirements need attention.","← Back",back);
-        if(running || !passed) {
-            String[] labels={"Android / ARM64","Android Virtualization Framework","Custom VM permissions","Platform integrity"};
-            for(int i=0;i<labels.length;i++) {
-                int y=390+i*115;
-                shape(420,y,1720,100,0xf5111a23,0xc72b4154,20);
-                boolean active=running && i==completed;
-                boolean ok=results[i].startsWith("Passed"),failed=results[i].startsWith("Failed");
-                if(ok)asset("compat-dot.png",458,y+33,34,34);
-                else shape(458,y+33,34,34,failed?0xffff8f82:0xff4a5866,0,17);
-                text(labels[i],520,y,760,100,33,0xe6b8c4d0,false,Gravity.CENTER_VERTICAL);
-                text(i<3?"System":"Integrity",1280,y,230,100,25,0xffa7b6c3,false,Gravity.CENTER_VERTICAL);
-                text(active?"Checking…":results[i],1520,y,570,100,27,ok?0xff55eba0:failed?0xffff8f82:0xffa7b6c3,false,Gravity.CENTER_VERTICAL|Gravity.RIGHT);
-                if(active) {
-                    ProgressBar spinner=new ProgressBar(context);spinner.setIndeterminateTintList(ColorStateList.valueOf(0xff55eba0));widget(spinner,1455,y+30,40,40);
-                }
-            }
-            ProgressBar progress=new ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal);
-            progress.setIndeterminate(running);progress.setMax(labels.length);progress.setProgress(completed);
-            progress.setIndeterminateTintList(ColorStateList.valueOf(0xff38d185));progress.setProgressTintList(ColorStateList.valueOf(0xff38d185));widget(progress,420,1120,1720,24);
-            text(running?(completed<labels.length?"Checking: "+labels[Math.min(completed,labels.length-1)]:"Saving results…"):"Read the results above, then retry.",420,1180,1720,65,28,0xffa7b6c3,false,Gravity.CENTER_VERTICAL);
-            if(!running) {
-                button("Run again",1120,1290,970,100,30,0xff05140f,0xff38d185,0xff38d185,26,repeat);
-                button("Skip test…",420,1290,650,100,28,0xffa7b6c3,0xfa15202b,0xe62a3b4d,26,skip);
-            }
-        } else {
-            asset("setup-glow-depth.png",759,249,950,950);
-            asset("compat-circle.png",500,440,410,410);
-            text("✓",535,494,340,313,250,0xfff5fafd,true,Gravity.CENTER);
-            text("Prerequisites ready",410,894,590,140,50,0xff6becaf,true,Gravity.CENTER);
-            shape(1120,410,970,700,0xe60e1720,0xcc2b4052,38);
-            text("LOCAL CHECKS COMPLETE",1190,465,760,45,24,0xff45e79c,true,Gravity.CENTER_VERTICAL);
-            text("Your device results",1190,510,760,65,42,0xffeff5f9,true,Gravity.CENTER_VERTICAL);
-            text("No boot or GPU success is inferred from file checks.",1190,575,760,70,27,0xffa7b6c3,false,Gravity.CENTER_VERTICAL);
-            String[] names={"AVF / custom VM permissions","Guest boot","vsock communication","OpenGL renderer"};
-            String[] values={"Verified",boot,vsock,graphics};
-            for(int i=0;i<4;i++) {
-                int y=665+i*100;shape(1190,y,800,86,0xf00f1720,0xe6293b4f,22);
-                text(names[i],1225,y,370,86,26,0xfff4f7fa,false,Gravity.CENTER_VERTICAL);
-                text(values[i],1605,y,350,86,23,values[i].startsWith("Verified")?0xff5ce8a5:0xffa7b6c3,true,Gravity.CENTER_VERTICAL|Gravity.RIGHT);
-            }
-            button("Continue",1120,1150,970,110,28,0xff05140f,0xf538d185,0xcc38d185,26,proceed);
-            button("Run again",1120,1285,450,80,26,0xffa7b6c3,0xfa15202b,0xe62a3b4d,22,repeat);
-            button("Share report",1600,1285,490,80,26,0xffa7b6c3,0xfa15202b,0xe62a3b4d,22,share);
+    private static final int TEXT=0xfff5f5f7, MUTED=0xffa6a7af, BLUE=0xff0a84ff;
+    private static final int LEFT=Gravity.START|Gravity.CENTER_VERTICAL;
+    private static final int RIGHT=Gravity.END|Gravity.CENTER_VERTICAL;
+    static final String[] CHECKS={"Android / ARM64","Платформа Android AVF","Разрешения Custom VM",
+            "Целостность платформы","Создание VM","Загрузка тестового ядра","Память гостя","Запись на тестовый диск","Обмен через vsock"};
+    private final TextView[] values=new TextView[CHECKS.length];
+    private final CheckMark[] marks=new CheckMark[CHECKS.length];
+
+    FigmaCompatibilityView(Context context,boolean running,AvfCompatibilityProbe.Status status,boolean hasPermissions,
+            boolean shareResults,java.util.function.Consumer<Boolean> setSharing,
+            Runnable repeat,Runnable proceed,Runnable back,Runnable skip,Runnable permission,Runnable diagnostics) {
+        super(context,true,1393);
+        asset("v12/8b7c5-svg.png",168,83,26,34);
+        button("Назад",200,56,260,88,34,BLUE,0,0,0,back).setGravity(LEFT);
+        String title=switch(status) {
+            case COMPATIBLE -> "Совместимо";
+            case NEEDS_WORK -> "Требуется доработка";
+            case INCOMPATIBLE -> "Несовместимо";
+            case INSUFFICIENT_DATA -> "Недостаточно данных";
+        };
+        text(running?"Проверка устройства":title,
+                160,228,2240,76,64,TEXT,true,LEFT);
+        text("Базовая совместимость AVF",320,408,1920,48,28,MUTED,false,LEFT);
+        shape(320,476,1920,576,0xff1c1d20,0,32);
+        for(int i=0;i<CHECKS.length;i++) {
+            int top=476+i*64;
+            marks[i]=new CheckMark(context);
+            widget(marks[i],360,top+12,40,40);
+            text(CHECKS[i],424,top,1136,64,30,TEXT,false,LEFT);
+            values[i]=text("",1600,top,!running&&!hasPermissions&&i==2?540:600,64,28,MUTED,false,RIGHT);
         }
+        text("Ubuntu, Windows и Mavk проверяются отдельно.",320,1104,1000,52,28,MUTED,false,LEFT);
+        if(!running) {
+            String label="Отправлять результаты";
+            text(label,1440,1092,680,80,28,TEXT,false,RIGHT);
+            FigmaToggle toggle=new FigmaToggle(context,shareResults);
+            widget(toggle,2150,1104,90,56);
+            View target=new View(context);
+            target.setContentDescription(label);
+            target.setSelected(shareResults);
+            target.setStateDescription(UiLanguage.text(shareResults?"Включено":"Выключено"));
+            widget(target,1440,1092,800,80);
+            click(target,()->{
+                boolean enabled=!target.isSelected();
+                setSharing.accept(enabled);
+                target.setSelected(enabled);
+                target.setStateDescription(UiLanguage.text(enabled?"Включено":"Выключено"));
+                toggle.checked(enabled);
+            });
+        }
+        if(running)widget(new FigmaProgress(context),320,1074,1920,14);
+        else if(status==AvfCompatibilityProbe.Status.COMPATIBLE) {
+            action("На главную","c4173",320,300,proceed);
+            button("Повторить",660,1208,320,96,34,TEXT,0,0,0,repeat);
+        }
+        else {
+            action("Повторить","955ba",320,300,repeat);
+            button("Пропустить проверку…",660,1208,480,96,34,TEXT,0,0,0,skip);
+            if(!hasPermissions) {
+                asset("v12/b9ac3-svg.png",2164,620,32,32);
+                View target=new View(context);
+                target.setContentDescription("Доступ к виртуализации");
+                widget(target,320,604,1920,64);
+                click(target,permission);
+            }
+        }
+        if(!running)button("Диагностика",1840,1208,400,96,32,BLUE,0,0,0,diagnostics);
+    }
+
+    void results(boolean running,int completed,String[] results) {
+        for(int i=0;i<values.length;i++) {
+            String value=results[i];
+            boolean passed=value.startsWith("Passed"),failed=value.startsWith("Failed");
+            marks[i].show(passed?1:failed?-1:0);
+            String label=passed?"Пройдено":failed?
+                    (i==2?"Нужен доступ":"Ошибка"):running&&i==completed?"Проверяем…":
+                    running?"Ожидание":"Не проверена";
+            String localized=UiLanguage.text(label);
+            if(!android.text.TextUtils.equals(values[i].getText(),localized))values[i].setText(localized);
+        }
+    }
+
+    private static final class CheckMark extends View {
+        private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int state;
+
+        CheckMark(Context context) {
+            super(context);
+            setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+        }
+
+        void show(int value) {
+            if(state!=value) {state=value;invalidate();}
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            float size=Math.min(getWidth(),getHeight());
+            float x=getWidth()/2f,y=getHeight()/2f;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(state==1?0xff203a34:state==-1?0xff482e37:0xff2b2d33);
+            canvas.drawCircle(x,y,size*.47f,paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(size*.062f);
+            paint.setColor(state==1?0xff82dfba:state==-1?0xfff9a9b8:0xff9297a3);
+            if(state==1) {
+                canvas.drawLine(x-size*.19f,y,x-size*.05f,y+size*.13f,paint);
+                canvas.drawLine(x-size*.05f,y+size*.13f,x+size*.21f,y-size*.16f,paint);
+            } else if(state==-1) {
+                float d=size*.145f;
+                canvas.drawLine(x-d,y-d,x+d,y+d,paint);
+                canvas.drawLine(x-d,y+d,x+d,y-d,paint);
+            } else {
+                canvas.drawLine(x-size*.13f,y,x+size*.13f,y,paint);
+            }
+        }
+    }
+
+    private void action(String label,String glyph,int x,int width,Runnable action) {
+        shape(x,1208,width,96,BLUE,0,48);
+        asset("v12/"+glyph+"-svg.png",x+36,1236,40,40);
+        text(label,x+92,1208,width-104,96,32,TEXT,true,LEFT);
+        View target=new View(getContext());
+        target.setContentDescription(label);
+        widget(target,x,1208,width,96);
+        click(target,action);
     }
 }

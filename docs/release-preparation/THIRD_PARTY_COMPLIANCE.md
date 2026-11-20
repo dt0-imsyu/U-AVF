@@ -4,6 +4,21 @@ Bundling binaries inside an APK/initrd does not remove their upstream obligation
 The inventory and extracted copyright files are evidence, NOT a completed legal
 audit or a substitute for corresponding source/build information.
 
+## U-AVF 1.2 additions
+
+- The Android Windows ISO reader ships VideoLAN libudfread 1.2.0 (VLC authors
+  and VideoLAN, LGPL-2.1-or-later). The WIM adapter includes libwim from wimlib
+  1.14.5. The bundled notices preserve wimlib's upstream GPL/LGPL terms and
+  their conditions. The exact corresponding source and replacement requirements
+  still need release verification.
+- The optional Ubuntu Mavk payload uses Mesa/Zink and gfxstream. Their upstream
+  notices and component-specific terms apply. Android's system Vulkan driver
+  is provided by the device. Windows Setup uses user-supplied Microsoft media
+  and a verified WinPE template.
+- Existing first-party license scope, Apache grants, and third-party terms
+  are unchanged. The build includes the license texts and privacy notice under
+  `assets/legal/`.
+
 ## Concrete evidence collected 2026-10-04
 
 - Current RC4 inventory refreshed from the actual signed APK (three prefixes),

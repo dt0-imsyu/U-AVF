@@ -1,52 +1,93 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
-// Copyright (c) 2026 U-AVF project owner (GitHub: dt0-imsyu).
-// See LICENSE-UAVF.txt and LICENSE_SCOPE.md; earlier/third-party rights preserved.
 package com.example.winavf;
 
 import android.content.Context;
+import android.graphics.Outline;
 import android.view.Gravity;
-import android.widget.TextView;
+import android.view.View;
+import android.view.ViewOutlineProvider;
+import android.widget.ImageView;
 
-/** Create OS294:127 / Image294:162; retains real picker/download verification. */
+/** OS chooser and Ubuntu installation form for the final Figma design. */
 final class FigmaCreateView extends FigmaCanvas {
-    FigmaCreateView(Context context,boolean image,boolean verified,String selected,
-            java.util.function.Consumer<String> choose,Runnable next,Runnable back,Runnable download,Runnable browse) {
-        super(context,"create-background.png",false);
-        header("Create workspace",image?"Choose where Ubuntu comes from.":"Choose the operating system.",image?"← Back":"← Dashboard",back);
-        wizard(image?2:1);
-        if(image) {
-            gradient(430,500,1700,260,0xf7121e29,0xf50e1720,0xc72a4053,24);
-            asset("ubuntu.png",500,540,150,156);
-            text("Ubuntu Desktop 24.04.5 ARM64",700,524,900,84,50,0xfaf4f7fa,true,Gravity.CENTER_VERTICAL);
-            text("Official Canonical image · Recommended",700,602,800,52,30,0xffb8c4d0,false,Gravity.CENTER_VERTICAL);
-            shape(696,665,438,54,0xfa15372a,0xf23e8a62,27);
-            text(verified?"✓ SHA256 verified":"SHA256 checked on import",714,665,402,54,24,0xff77edad,false,Gravity.CENTER);
-            button("Ubuntu website ↗",1622,575,426,96,28,0xffe7eef5,0xfa15202b,0xe62a3b4d,24,download);
-            gradient(430,820,1700,210,0xf7121e29,0xf50e1720,0xc72a4053,24);
-            text("Choose local ISO",500,856,500,72,42,0xffb8c4d0,false,Gravity.CENTER_VERTICAL);
-            text("After downloading Desktop ARM64, select the ISO here",500,923,970,65,28,0xffa7b6c3,false,Gravity.CENTER_VERTICAL);
-            button("Browse files",1682,870,346,90,36,0xffe7eef5,0xfa15202b,0xe62a3b4d,24,browse);
-            button("Back",412,1160,346,96,36,0xffe7eef5,0xfa15202b,0xe62a3b4d,24,back);
-            TextView continueButton=button("Continue",1642,1160,506,96,36,0xff1a0c05,0xffff8a47,0xffff8a47,26,next);
-            continueButton.setEnabled(verified);continueButton.setAlpha(verified?1:0.4f);
-        } else {
-            boolean windowsSelected="windows".equals(selected);
-            gradient(430,500,780,420,windowsSelected?0xf7121e29:0xff24332b,0xf50e1720,windowsSelected?0xc72a4053:0xffff8a47,34);
-            asset("ubuntu.png",500,575,170,178);text("Ubuntu",720,554,400,96,58,0xfaf4f7fa,true,Gravity.CENTER_VERTICAL);
-            shape(716,660,258,54,0xfa15372a,0xf23e8a62,27);text("Recommended",734,660,222,54,24,0xff77edad,false,Gravity.CENTER);
-            text("Official Ubuntu Desktop ARM64\nFull GNOME desktop",720,737,400,160,30,0xffb8c4d0,false,Gravity.TOP);
-            gradient(1350,500,780,420,windowsSelected?0xff24332b:0xf7121e29,0xf50e1720,windowsSelected?0xffff8a47:0xc72a4053,34);
-            asset("windows.png",1420,585,150,150);text("Windows ARM",1630,554,420,96,58,0xfaf4f7fa,true,Gravity.CENTER_VERTICAL);
-            shape(1626,660,258,54,0xfa3a2a18,0xe69e6a2d,27);text("Experimental",1644,660,222,54,24,0xffffc174,false,Gravity.CENTER);
-            text("Pre-alpha boot path\nNot recommended for daily use",1630,737,420,160,30,0xffb8c4d0,false,Gravity.TOP);
-            text("✓ Selected",windowsSelected?1880:960,858,210,52,25,0xffff8a47,true,Gravity.CENTER);
-            android.view.View ubuntuHit=shape(430,500,780,420,0,0,34);
-            ubuntuHit.setSelected(!windowsSelected);ubuntuHit.setContentDescription("Ubuntu"+(!windowsSelected?", selected":""));
-            click(ubuntuHit,()->choose.accept("ubuntu"));
-            android.view.View windowsHit=shape(1350,500,780,420,0,0,34);
-            windowsHit.setSelected(windowsSelected);windowsHit.setContentDescription("Windows ARM, experimental"+(windowsSelected?", selected":""));
-            click(windowsHit,()->choose.accept("windows"));
-            button("Continue",1642,1150,506,102,36,0xff1a0c05,0xffff8a47,0xffff8a47,26,next);
-        }
+    private static final int TEXT=0xfff5f5f7, MUTED=0xffa6a7af, BLUE=0xff0a84ff;
+    private static final int LEFT=Gravity.START|Gravity.CENTER_VERTICAL;
+
+    FigmaCreateView(Context context,boolean ubuntuExists,Runnable back,Runnable ubuntu,Runnable windows) {
+        super(context,true,1393);
+        header("Новый воркспейс",back);
+        text("Операционная система",112,350,2300,64,34,TEXT,true,LEFT);
+        card(112,456,1144,824,false,ubuntuExists?"Открыть воркспейс":"Ubuntu 24.04 LTS · ARM64");
+        card(1304,456,1144,824,true,"Экспериментальный запуск Windows");
+        icon("bd3c2",1102,1158,36);
+        icon("bd3c2",2294,1158,36);
+        hit(ubuntuExists?"Открыть воркспейс":"Создать Ubuntu",112,456,1144,824,ubuntu);
+        hit("Экспериментальный запуск Windows",1304,456,1144,824,windows);
+    }
+
+    FigmaCreateView(Context context,String name,String resources,boolean verified,boolean hasDisk,
+            Runnable back,Runnable rename,Runnable image,Runnable advanced,Runnable start) {
+        super(context,true,1393);
+        header("Новый Ubuntu",back);
+        card(112,368,880,880,false,"Ubuntu 24.04 LTS · ARM64");
+        option(368,"Название",name,rename,"fc13e");
+        option(548,"Установочный ISO",verified?"ubuntu-24.04.5-desktop-arm64.iso":"Выбрать файл…",image,"3cf56");
+        fixed(1056,728,"Среда рабочего стола","GNOME");
+        fixed(1776,728,"Графическая сессия","X11");
+        option(908,"Ресурсы",resources,advanced,"3cf56");
+        String primary=hasDisk?"Открыть воркспейс":verified?"Создать воркспейс":"Выбрать ISO";
+        shape(1936,1264,512,96,BLUE,0,48);
+        icon(verified?"b73ab":"c7402",1980,1292,40);
+        text(primary,2040,1264,388,96,32,TEXT,true,LEFT);
+        hit(primary,1936,1264,512,96,hasDisk||verified?start:image);
+    }
+
+    private void header(String title,Runnable back) {
+        icon("4de18",112,80,40);
+        button("Назад",168,60,250,80,32,BLUE,0,0,0,back).setGravity(LEFT);
+        text(title,112,208,2200,80,64,TEXT,true,LEFT);
+    }
+
+    private void card(int x,int y,int w,int h,boolean windows,String subtitle) {
+        shape(x,y,w,h,0xff1c1d20,0xff3a3c42,40);
+        int imageHeight=h-212;
+        ImageView preview=asset(windows?"v12/windows-workspace.webp":"v12/ubuntu-workspace.webp",x+1,y+1,w-2,imageHeight);
+        preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        preview.setOutlineProvider(new ViewOutlineProvider() {
+            @Override public void getOutline(View view,Outline outline) {
+                float radius=40*view.getWidth()/(float)(w-2);
+                outline.setRoundRect(0,0,view.getWidth(),view.getHeight()+Math.round(radius),radius);
+            }
+        });
+        preview.setClipToOutline(true);
+        icon(windows?"efef3":"d6129",x+52,y+imageHeight+52,88);
+        text(windows?"Windows":"Ubuntu",x+176,y+imageHeight+44,w-280,65,46,TEXT,true,LEFT);
+        text(subtitle,x+176,y+imageHeight+110,w-250,48,28,MUTED,false,LEFT);
+    }
+
+    private void option(int y,String title,String value,Runnable action,String chevron) {
+        shape(1056,y,1392,148,0xff1c1d20,0xff3a3c42,40);
+        text(title,1092,y+22,1260,40,25,MUTED,false,LEFT);
+        text(value,1092,y+64,1235,50,32,TEXT,false,LEFT);
+        icon(chevron,2340,y+58,32);
+        hit(title,1056,y,1392,148,action);
+    }
+
+    private void fixed(int x,int y,String label,String value) {
+        shape(x,y,672,148,0xff1c1d20,0xff3a3c42,40);
+        text(label,x+36,y+22,600,40,25,MUTED,false,LEFT);
+        shape(x+36,y+62,600,66,0xff27282c,0,28);
+        text(value,x+36,y+62,600,66,30,TEXT,true,Gravity.CENTER);
+    }
+
+    private void icon(String name,int x,int y,int size) {
+        asset("v12/"+name+"-svg.png",x,y,size,size).setScaleType(ImageView.ScaleType.FIT_CENTER);
+    }
+
+    private void hit(String label,int x,int y,int w,int h,Runnable action) {
+        View target=new View(getContext());
+        target.setContentDescription(label);
+        widget(target,x,y,w,h);
+        click(target,action);
     }
 }

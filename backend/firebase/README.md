@@ -1,19 +1,56 @@
 # Compatibility reports (u-avf-7481c)
 
-Development ingest only. Firestore location: europe-central2. No paid services
-or billing upgrade are needed. Deployment status is tracked in RELEASE_CHECKLIST.
+Opt-in compatibility ingest. Firestore location: europe-central2. No paid services
+or billing upgrade are needed.
 
-The installed Android REST client now authenticates anonymously and submits after
-an opted-in completed check. Device submission verified 2026-10-03 17:32:37 UTC+3.
-Auth users appear in Authentication → Users. Reports are under Cloud Firestore →
-Data → compatibility_reports → UID → runs → numeric document. UID parents have
-no fields: the Console may say the parent document does not exist; expand `runs`
-to see the actual report. No separate `users` Firestore collection is needed.
-Refresh credentials are encrypted using Android Keystore in private app storage.
-No automatic retry queue: an error is shown and Share report permits a retry.
+## U-AVF 1.2 schema
+
+- `compatibility_devices/{manufacturer}/{model}/{configuration}/reporters/{uid}/tests/{run}`
+  stores each completed AVF result under its hardware group. Configuration is
+  `api<N>-ram<N>-cpu<N>`, using the Android API, rounded RAM in GiB and app-visible
+  processor count. Firestore alternates collections and documents, so each model
+  is a collection directly under its manufacturer's document. The old
+  `models/{model}/configurations/{configuration}` route remains for earlier APKs.
+- `compatibility_reporters/{uid}/receipts/{run}` and
+  `compatibility_reporters/{uid}/slots/{0..31}` track delivery and enforce the quota.
+  A run is a random ID persisted with the local result. A single commit creates
+  the report, receipt and slot, and rules require all three to agree. The
+  reporter can read its own receipt or slot by ID to recover after a lost response.
+- A report contains app/Android versions, check outcomes, status, consent,
+  schema version, slot and server timestamp. The `device` section contains
+  Android API level, rounded-up RAM in GiB and app-visible CPU count. The
+  `avf` section contains the probe's reported guest memory in whole MiB
+  (zero when unavailable). Earlier v2 clients can still omit both sections.
+  Ubuntu, Windows and Mavk results remain separate local diagnostics.
+  Report bodies are write-only to clients.
+- The first-run dialog saves the sharing choice and starts the local check.
+  Later checks use the saved switch on the compatibility screen.
+  The report uses the completed run's
+  ID. Refresh credentials stay encrypted in Android Keystore. No retry queue.
+
+Run the Auth and Firestore emulator tests from the repository root:
+
+```powershell
+npx --yes firebase-tools@14.23.0 emulators:exec --only auth,firestore --project demo-uavf --config backend/firebase/firebase.json 'python backend/firebase/test-compatibility-rules.py'
+```
+
+The emulator accepted the grouped commit and legacy v1 write. It rejected
+partial writes, replay across configurations, occupied slots, writes without
+consent, another account's access and a claimed compatible result with an
+unverified check. The emulators use a loopback demo project.
+
+Production rules were deployed on 2026-11-15. Readback matched this
+`firestore.rules`. Two legacy v2 reports were moved to the direct model
+path. The report payloads and original submission timestamps matched after
+the move. The previous path still accepts older APKs. The emulator covered
+the new path, receipt lookup, consent, duplicate rejection and legacy writes.
+The deployed v1 paths and permissions were preserved.
+
+## Historical v1 reports
 
 - `compatibility_reports/{anonymousUid}/runs/{0..31}`: immutable opt-in reports.
-- No app read/list/update/delete; administrators use Firebase Console.
+- Existing records and old clients keep their path and rules.
+- Administrators can inspect the history in Firebase Console.
 - Server timestamp and exact bounded field/schema validation.
 - ABI/API, permissions, storage and checksum probe outcomes are separate from
   boot/vsock/actual-renderer evidence. Missing evidence remains `not_tested`.

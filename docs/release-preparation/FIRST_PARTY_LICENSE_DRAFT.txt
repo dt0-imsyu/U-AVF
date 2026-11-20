@@ -1,0 +1,12 @@
+SUPERSEDED — 2026-10-04
+
+The initial review draft has been replaced by the locally adopted scoped terms:
+LICENSE-UAVF.txt, LICENSE_SCOPE.md and the root LICENSE index.
+
+The owner confirmed ownership of original non-borrowed U-AVF material. Existing
+Apache rights and all third-party rights remain unchanged. Do not use the earlier
+draft as the current license. Old private kits preserve it only as historical evidence.
+
+Local adoption does not authorize publication or establish complete GPL/LGPL,
+provenance, privacy, patent or public-release compliance. See
+LICENSE_ADOPTION_PLAN.md and PREPUBLICATION_CHECKLIST.md.

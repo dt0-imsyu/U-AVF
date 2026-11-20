@@ -21,4 +21,7 @@ final class WorkspaceConfig {
     long memoryBytes() { return (long)ramGiB*1073741824L; }
     String topology() { return oneCpu?"CPU_TOPOLOGY_ONE_CPU":"CPU_TOPOLOGY_MATCH_HOST"; }
     String resolution() { return width+"x"+height; }
+    static boolean supportsDisplay(int width,int height) {
+        return width==1280 && height==800 || width==1920 && (height==1080 || height==1200);
+    }
 }

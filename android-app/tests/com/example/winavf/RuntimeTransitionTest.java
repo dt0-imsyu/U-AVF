@@ -1,5 +1,7 @@
 package com.example.winavf;
 
+import com.example.winavf.runtime.RuntimeTransition;
+
 /** Host-only lifecycle evidence regression. */
 public final class RuntimeTransitionTest {
     private static void check(boolean value,String detail) {if(!value)throw new AssertionError(detail);}
@@ -49,6 +51,13 @@ public final class RuntimeTransitionTest {
         check(t.events().containsKey("Linux kernel") && t.events().containsKey("systemd userspace"),"quiet installed kernel and systemd status format");
         t.serial(current,"UAVF_GDM_SHARE=START DISPLAY=:0 UID=1000\n",130002);
         check(t.events().containsKey("GDM started"),"sharing witness advances actual GDM stage");
+        int reconnect=t.begin(RuntimeTransition.Mode.DISPLAY_RECONNECT,135000);
+        t.serial(reconnect,"Power down\n",135100);
+        check(t.events().containsKey("Display reconnect requested") && !t.events().containsKey("Start requested")
+                && !t.events().containsKey("Guest powered off"),"display reconnection is neither boot nor poweroff");
+        check(t.mode()==RuntimeTransition.Mode.DISPLAY_RECONNECT && !t.finishDesktop(reconnect),
+                "reconnect is pending until a frame");
+        check(t.desktop(135200) && t.finishDesktop(reconnect),"real frame completes display reconnection");
         if(args.length>0) {
             t.begin(RuntimeTransition.Mode.BOOT,140000);
             String serial;

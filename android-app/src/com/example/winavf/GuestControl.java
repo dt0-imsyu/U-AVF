@@ -15,12 +15,16 @@ final class GuestControl implements AutoCloseable {
     interface Listener { void status(boolean connected,String detail,JSONObject session); }
     private final Object vm;
     private final Listener listener;
+    private final Boolean mavkMode;
     private final ScheduledExecutorService timer=Executors.newSingleThreadScheduledExecutor();
     private volatile boolean closed,connected;
     private volatile ParcelFileDescriptor fd;
     private InputStream input; private OutputStream output; private int id;
     GuestControl(Object vm,Listener listener) {
-        this.vm=vm; this.listener=listener;
+        this(vm,null,listener);
+    }
+    GuestControl(Object vm,Boolean mavkMode,Listener listener) {
+        this.vm=vm; this.listener=listener; this.mavkMode=mavkMode;
         Thread t=new Thread(this::loop,"U-AVF-control"); t.setDaemon(true); t.start();
     }
     boolean connected() { return connected; }
@@ -35,9 +39,29 @@ final class GuestControl implements AutoCloseable {
                 }
                 JSONObject hello=exchange("HELLO");
                 if(!hello.optBoolean("ok")) throw new IOException("Guest control HELLO rejected");
+                boolean selected=false;
+                String modeError="";
+                if(mavkMode!=null) {
+                    boolean capable=false;
+                    org.json.JSONArray caps=hello.optJSONArray("capabilities");
+                    if(caps!=null)for(int n=0;n<caps.length();n++)
+                        if("MAVK_MODE".equals(caps.optString(n)))capable=true;
+                    if(capable) {
+                        JSONObject mode=exchange(mavkMode?"MAVK_ENABLE":"MAVK_DISABLE");
+                        long deadline=android.os.SystemClock.elapsedRealtime()+90000;
+                        while(!closed && mode.optBoolean("retry") && android.os.SystemClock.elapsedRealtime()<deadline) {
+                            Thread.sleep(500);
+                            mode=exchange(mavkMode?"MAVK_ENABLE":"MAVK_DISABLE");
+                        }
+                        selected=mode.optBoolean("ok")&&"mavk".equals(mode.optString("mode"));
+                        if(!mode.optBoolean("ok"))modeError=mode.optString("error","Mode rejected");
+                    } else if(mavkMode)modeError="Installed Mavk add-on unavailable";
+                }
                 connected=true;
                 while(!closed) {
-                    JSONObject info=exchange("SESSION_INFO"); listener.status(true,"Connected",info);
+                    JSONObject info=exchange("SESSION_INFO");
+                    if(mavkMode!=null)info.put("mavk_selected",selected).put("mavk_mode_error",modeError);
+                    listener.status(true,"Connected",info);
                     Thread.sleep(3000);
                 }
             } catch(Exception e) { if(!closed) listener.status(false,"Unavailable: "+e.getClass().getSimpleName(),null); }
@@ -69,6 +93,14 @@ final class GuestControl implements AutoCloseable {
             try { JSONObject r=exchange(reboot?"REBOOT":"SHUTDOWN"); result.accept(r.optBoolean("ok")?"ACK":r.optString("error","Rejected")); }
             catch(Exception e) { result.accept("Unavailable: "+e.getClass().getSimpleName()); }
         },"U-AVF-power-request"); t.setDaemon(true); t.start();
+    }
+    void installPlasma(java.util.function.Consumer<Boolean> result) {
+        Thread thread=new Thread(()->{
+            try { result.accept(exchange("PLASMA_INSTALL").optBoolean("ok")); }
+            catch(Exception e) { result.accept(false); }
+        },"U-AVF-plasma-install");
+        thread.setDaemon(true);
+        thread.start();
     }
     private static byte[] exact(InputStream in,int size) throws IOException {
         byte[] b=new byte[size]; int at=0; while(at<size) { int n=in.read(b,at,size-at); if(n<0) throw new EOFException(); at+=n; } return b;

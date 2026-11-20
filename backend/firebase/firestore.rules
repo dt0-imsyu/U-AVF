@@ -1,4 +1,7 @@
 rules_version = '2';
+// v2 reports are grouped by normalized manufacturer, model and device configuration.
+// Each immutable report has a UUID receipt and one of 32 immutable slots per reporter.
+// The three documents must be created atomically. Historical v1 reports keep their rules.
 service cloud.firestore {
   match /databases/{database}/documents {
     function state(value) {
@@ -34,6 +37,111 @@ service cloud.firestore {
         && run.matches('^([0-9]|[12][0-9]|3[01])$')
         && validReport(request.resource.data);
       allow read, update, delete: if false;
+    }
+
+    function anonymousOwner(owner) {
+      return request.auth != null && request.auth.uid == owner
+        && request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+    function runId(run) {
+      return run is string && run.matches('^[a-f0-9]{32}$');
+    }
+    function slotId(slot) {
+      return slot is string && slot.matches('^([0-9]|[12][0-9]|3[01])$');
+    }
+    function group(manufacturer, model, config) {
+      return manufacturer is string && manufacturer.matches('^[a-z0-9][a-z0-9-]{0,47}$')
+        && model is string && model.matches('^[a-z0-9][a-z0-9-]{0,63}$')
+        && config is string && config.matches('^api[0-9]{2,3}-ram[0-9]{1,3}-cpu[0-9]{1,3}$');
+    }
+    function receiptPath(owner, run) {
+      return /databases/$(database)/documents/compatibility_reporters/$(owner)/receipts/$(run);
+    }
+    function slotPath(owner, slot) {
+      return /databases/$(database)/documents/compatibility_reporters/$(owner)/slots/$(slot);
+    }
+    function reportPath(owner, run, manufacturer, model, config, direct) {
+      return direct ?
+        /databases/$(database)/documents/compatibility_devices/$(manufacturer)/$(model)/$(config)/reporters/$(owner)/tests/$(run) :
+        legacyReportPath(owner, run, manufacturer, model, config);
+    }
+    function legacyReportPath(owner, run, manufacturer, model, config) {
+      return /databases/$(database)/documents/compatibility_devices/$(manufacturer)/models/$(model)/configurations/$(config)/reporters/$(owner)/tests/$(run);
+    }
+    function validChecks(checks) {
+      let fields = ['arm64','avf','permissions','platform','created','boot','memory','storage','vsock'];
+      return checks is map && checks.keys().hasAll(fields) && checks.keys().hasOnly(fields)
+        && checks.values().hasOnly(['pass','fail','not_tested']);
+    }
+    function validReportDetails(data) {
+      let deviceFields = ['androidApi','ramGiB','cpuCount'];
+      return !data.keys().hasAny(['device','avf']) ||
+        (data.keys().hasAll(['device','avf'])
+          && data.device is map && data.device.keys().hasAll(deviceFields)
+          && data.device.keys().hasOnly(deviceFields)
+          && data.device.androidApi is int && data.device.androidApi >= 36 && data.device.androidApi <= 999
+          && data.device.ramGiB is int && data.device.ramGiB >= 0 && data.device.ramGiB <= 999
+          && data.device.cpuCount is int && data.device.cpuCount >= 1 && data.device.cpuCount <= 999
+          && data.avf is map && data.avf.keys().hasOnly(['guestMemoryMiB'])
+          && data.avf.guestMemoryMiB is int && data.avf.guestMemoryMiB >= 0
+          && data.avf.guestMemoryMiB <= 1048576);
+    }
+    function validReportV2(data) {
+      let fields = ['schemaVersion','consent','submittedAt','appVersion','androidRelease','status','checks','slot'];
+      return data.keys().hasAll(fields) && data.keys().hasOnly(fields.concat(['device','avf']))
+        && data.schemaVersion == 2 && data.consent == true && data.submittedAt == request.time
+        && data.appVersion is string && data.appVersion.size() > 0 && data.appVersion.size() <= 64
+        && data.androidRelease is string && data.androidRelease.size() <= 32
+        && data.status in ['COMPATIBLE','NEEDS_WORK','INCOMPATIBLE','INSUFFICIENT_DATA']
+        && slotId(data.slot) && validChecks(data.checks) && validReportDetails(data)
+        && (data.status != 'COMPATIBLE' || data.checks.values().hasOnly(['pass']));
+    }
+    function validReceipt(data) {
+      let fields = ['manufacturer','model','configuration','slot'];
+      return data.keys().hasAll(fields) && data.keys().hasOnly(fields.concat(['layout']))
+        && (!data.keys().hasAny(['layout']) || data.layout == 'direct')
+        && group(data.manufacturer, data.model, data.configuration) && slotId(data.slot);
+    }
+    function linkedReceipt(owner, run, manufacturer, model, config, slot, direct) {
+      let receipt = receiptPath(owner, run);
+      let data = getAfter(receipt).data;
+      return !exists(receipt) && validReceipt(data)
+        && data.manufacturer == manufacturer && data.model == model
+        && data.configuration == config && data.slot == slot
+        && data.keys().hasAny(['layout']) == direct;
+    }
+    function linkedReport(owner, run, data) {
+      let report = reportPath(owner, run, data.manufacturer, data.model, data.configuration, data.keys().hasAny(['layout']));
+      let slot = slotPath(owner, data.slot);
+      return !exists(report) && !exists(slot)
+        && getAfter(report).data.slot == data.slot
+        && getAfter(slot).data == {'run': run};
+    }
+    match /compatibility_devices/{manufacturer}/{model}/{config}/reporters/{owner}/tests/{run} {
+      allow create: if anonymousOwner(owner) && runId(run) && group(manufacturer, model, config)
+        && validReportV2(request.resource.data)
+        && linkedReceipt(owner, run, manufacturer, model, config, request.resource.data.slot, true);
+      allow read, update, delete: if false;
+    }
+    match /compatibility_devices/{manufacturer}/models/{model}/configurations/{config}/reporters/{owner}/tests/{run} {
+      allow create: if anonymousOwner(owner) && runId(run) && group(manufacturer, model, config)
+        && validReportV2(request.resource.data)
+        && linkedReceipt(owner, run, manufacturer, model, config, request.resource.data.slot, false);
+      allow read, update, delete: if false;
+    }
+    match /compatibility_reporters/{owner}/receipts/{run} {
+      allow get: if anonymousOwner(owner) && runId(run);
+      allow create: if anonymousOwner(owner) && runId(run) && validReceipt(request.resource.data)
+        && linkedReport(owner, run, request.resource.data);
+      allow list, update, delete: if false;
+    }
+    match /compatibility_reporters/{owner}/slots/{slot} {
+      allow get: if anonymousOwner(owner) && slotId(slot);
+      allow create: if anonymousOwner(owner) && slotId(slot)
+        && request.resource.data.keys().hasOnly(['run']) && runId(request.resource.data.run)
+        && !exists(receiptPath(owner, request.resource.data.run))
+        && getAfter(receiptPath(owner, request.resource.data.run)).data.slot == slot;
+      allow list, update, delete: if false;
     }
     match /{document=**} { allow read, write: if false; }
   }

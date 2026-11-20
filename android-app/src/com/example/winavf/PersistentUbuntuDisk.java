@@ -294,11 +294,12 @@ final class PersistentUbuntuDisk {
 
     /** Recover only a verified prior installed ESP over the exact shipped Live ESP.
      * Never touches GPT, ISO or root; refuses ambiguous or unverified backups. */
-    static String recoverInstalledEsp(File disk, long isoBytes, String liveEspSha,
-            File backupDirectory) throws Exception {
+    static String recoverInstalledEsp(File disk, long isoBytes, File backupDirectory,
+            String... knownLiveEspHashes) throws Exception {
         if (!audit(disk, isoBytes, TARGET_BYTES)) throw new SecurityException("Recovery GPT audit failed");
         if (hasInstalledBootCandidate(disk)) return "NOT_NEEDED";
-        if (!liveEspSha.equalsIgnoreCase(sha256Range(disk, ESP_PARTITION_OFFSET, ESP_PARTITION_BYTES)))
+        String liveEspSha = sha256Range(disk, ESP_PARTITION_OFFSET, ESP_PARTITION_BYTES);
+        if (java.util.Arrays.stream(knownLiveEspHashes).noneMatch(liveEspSha::equalsIgnoreCase))
             return "CURRENT_ESP_NOT_MANAGED_LIVE";
         File[] backups = backupDirectory.listFiles();
         if (backups == null) return "NO_BACKUP";

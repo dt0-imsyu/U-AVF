@@ -36,10 +36,10 @@ public final class InstalledEspRecoveryTest {
         String old=(String)range.invoke(null,backup,0L,backup.length());
         File named=new File(backups,"platform-esp-backup-"+old+".bin");
         if(!backup.renameTo(named))throw new Exception("Rename failed");
-        if(!PersistentUbuntuDisk.recoverInstalledEsp(disk,iso,"0".repeat(64),backups).equals("CURRENT_ESP_NOT_MANAGED_LIVE"))throw new AssertionError("Unknown ESP modified");
-        String result=PersistentUbuntuDisk.recoverInstalledEsp(disk,iso,live,backups);
+        if(!PersistentUbuntuDisk.recoverInstalledEsp(disk,iso,backups,"0".repeat(64),"1".repeat(64)).equals("CURRENT_ESP_NOT_MANAGED_LIVE"))throw new AssertionError("Unknown ESP modified");
+        String result=PersistentUbuntuDisk.recoverInstalledEsp(disk,iso,backups,"0".repeat(64),"1".repeat(64),live);
         if(!result.equals("RESTORED SHA256="+old)||!PersistentUbuntuDisk.hasInstalledBootCandidate(disk))throw new AssertionError(result);
-        if(!PersistentUbuntuDisk.recoverInstalledEsp(disk,iso,live,backups).equals("NOT_NEEDED"))throw new AssertionError("Not idempotent");
+        if(!PersistentUbuntuDisk.recoverInstalledEsp(disk,iso,backups,live).equals("NOT_NEEDED"))throw new AssertionError("Not idempotent");
         try(RandomAccessFile f=new RandomAccessFile(disk,"r")) {
             f.seek(root*512);if(!f.readUTF().equals("ROOT_PRESERVED"))throw new AssertionError("Root changed");
             f.seek(134217728);if(!f.readUTF().equals("ISO_PRESERVED"))throw new AssertionError("ISO changed");

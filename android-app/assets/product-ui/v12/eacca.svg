@@ -1,0 +1,20 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="52" height="52.5736" viewBox="0 0 52 52.5736" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="UAVF / Asset/Brand">
+<g id="U-AVF / Original flat U &#226;&#128;&#148; AVF cutout" filter="url(#filter0_d_0_58)">
+<path d="M21.0029 42.8856L21.5164 43.9377L21.7206 44.309H20.1302L20.3406 43.9377L20.8791 42.8856H21.0029Z" fill="#F5F5F7"/>
+<path d="M15.0747 2.6C15.7867 2.60003 16.3639 3.17522 16.3639 3.88724V36.5911C16.3639 41.2971 35.6361 41.6757 35.6361 36.5911V3.88926C35.6361 3.17724 36.2133 2.60003 36.9253 2.6H40.5686C41.2806 2.6 41.8579 3.17722 41.8579 3.88926V36.5911C41.8579 53.7524 10.1421 53.5866 10.1421 36.5911V3.88926C10.1421 3.17722 10.7194 2.6 11.4314 2.6H15.0747ZM19.7714 41.7161L17.067 46.048H19.1278L19.5176 45.3734H22.3086L22.6799 46.048H25.2588L26.9765 43.2965V46.048H28.895V44.9712H33.9818V43.6592H28.895V43.1518H34.6502V41.7161H25.8157L24.0953 44.6494L22.4368 41.7161H19.7714Z" fill-rule="evenodd" clip-rule="evenodd" fill="#F5F5F7"/>
+</g>
+</g>
+<defs>
+<filter id="filter0_d_0_58" x="10.1421" y="2.6" width="34.8893" height="49.9736" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dx="1.58678" dy="1.58678"/>
+<feGaussianBlur stdDeviation="0.793389"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.41 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_0_58"/>
+<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_0_58" result="shape"/>
+</filter>
+</defs>
+</svg>

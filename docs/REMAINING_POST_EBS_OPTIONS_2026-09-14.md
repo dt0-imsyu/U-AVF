@@ -38,7 +38,7 @@ with a minimal firmware-only reproducer. Ask Samsung to provide one of:
 
 This is the only route that can directly identify the Windows execution state
 without weakening the security model. Track the Samsung Members report ID and
-use [the submission kit](SAMSUNG_GENIEZONE_SUBMISSION_KIT_2026-09-14.md) for
+use [the submission kit](SAMSUNG_GENIEZONE_SUBMISSION_KIT_2026-09-14.txt) for
 follow-up.
 
 ### 2. Firmware/OTA regression control — high information when an update arrives

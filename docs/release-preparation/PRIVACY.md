@@ -1,6 +1,6 @@
 # U-AVF privacy notice
 
-Updated2026-10-04. Project developer: GitHub dt0-imsyu.
+Updated 2026-11-15. Project developer: GitHub dt0-imsyu.
 Project support: https://github.com/dt0-imsyu/U-AVF/issues
 Do not post passwords, authentication tokens or private guest files publicly.
 
@@ -15,15 +15,20 @@ Deleting a workspace or clearing application data can delete its virtual disk.
 
 ## Optional cloud compatibility reports
 
-Sharing is OFF by default and is not required to use U-AVF. You can choose it
-on the Welcome screen before the compatibility test. The developer uses reports
-for compatibility analysis, optimization and further development.
+The compatibility check runs locally. Diagnostics keeps the 12 most recent
+completed reports on the device for search, copying and manual export.
+The first-run dialog saves your choice
+about sharing. You can change it on the compatibility screen before any later
+check. If sharing is on when a check begins, the app sends that result after
+the check. The developer uses reports to expand device support.
 
 With consent, U-AVF authenticates anonymously with Google Firebase and sends
 a bounded report to the developer's Cloud Firestore project u-avf-7481c.
-This is an external cloud database, NOT local-only storage. The report contains:
-app version; Android/API version; manufacturer/model; compatibility-test and
-runtime-evidence states; consent/schema version; server submission time.
+Reports include the app and Android versions, normalized manufacturer and
+model, Android API level, a RAM bucket and the processor count available to
+the app. They include the local AVF check outcomes, a random test identifier,
+the consent and schema version, and the server submission time. Ubuntu,
+Windows and Mavk outcomes have separate local diagnostics.
 Firebase associates reports with a persistent anonymous account identifier.
 Anonymous authentication does not make the data absolutely anonymous; the
 provider also necessarily receives network/connection metadata.
@@ -33,13 +38,15 @@ screenshots, audio, filenames/paths or full serial/logcat logs. The APK has no
 Firebase administrator/service-account credentials. Results are untrusted
 client reports, not a certification that every device/application works.
 
-Only the developer can view/manage reports in Firebase. The app can create its
-bounded own reports but cannot read, change or delete reports. Sharing is not
-Firebase Analytics and is not required for device testing or VM operation.
-There is currently no automatic expiry or in-app report-deletion mechanism.
-Disabling sharing stops future uploads; it does not erase prior reports or
-the Firebase account. No fixed retention/deletion deadline is promised.
-Do not enable sharing if these limits are unacceptable.
+The developer can view and manage reports in Firebase. The app can create
+reports for its own account and read its own delivery receipts. Report bodies
+are available to the developer. VM operation and device testing work with
+sharing disabled.
+Reports are grouped by manufacturer, model and device configuration. The
+AVF section includes the test VM's reported memory in whole MiB, or zero
+if unavailable. There is no automatic expiry or in-app report deletion.
+Choose “Continue without sharing” to run a test without uploading its result.
+Previously submitted reports and the Firebase account remain in place.
 
 ## Русский
 
@@ -53,18 +60,25 @@ https://github.com/dt0-imsyu/U-AVF/issues . Не публикуйте там п�
 содержимое. Обновление APK не переустанавливает Ubuntu. Удаление workspace или
 данных Android-приложения может удалить виртуальный диск.
 
-Отправка совместимости добровольная, по умолчанию выключена и не нужна для
-работы VM. При согласии результаты отправляются во внешнюю облачную Firebase
-разработчика для анализа совместимости, оптимизации и разработки U-AVF.
-Это НЕ локальная база на планшете. Передаются версия приложения/Android,
-производитель/модель, состояния проверок и runtime, согласие, версия схемы и
-время отправки. Firebase создаёт устойчивый идентификатор анонимного аккаунта;
-это не абсолютная анонимность, сервис также получает сетевые метаданные.
+Проверка совместимости выполняется локально. Диагностика хранит на устройстве
+до 12 последних завершённых отчётов для поиска, копирования и ручного экспорта.
+При первом запуске приложение
+предлагает сохранить выбор об отправке. Его можно изменить переключателем
+на экране проверки перед следующим тестом. Если отправка включена в момент
+запуска теста, отчёт отправляется после проверки в облачную Firebase разработчика, чтобы
+расширять список поддерживаемых устройств. Передаются версия
+приложения и Android, производитель и модель, уровень Android API,
+округлённый объём памяти, доступное приложению число процессоров и результаты
+проверок AVF. Также сохраняются случайный идентификатор прогона, согласие,
+версия схемы и время отправки. Firebase связывает отчёты с устойчивым
+идентификатором анонимного аккаунта и получает сетевые метаданные.
 
 Пароли, буфер, файлы гостя, скриншоты, звук, имена/пути файлов и полные логи
 намеренно не включаются. Административных ключей Firebase в APK нет. Приложение
-не может читать, изменять или удалять отчёты; доступ к ним у разработчика.
+может отправлять отчёты и читать подтверждения доставки своего аккаунта.
+Содержимое отправленных отчётов доступно разработчику. Отчёты группируются
+по производителю, модели и конфигурации. Раздел AVF содержит объём памяти,
+измеренный внутри тестовой VM, в целых МиБ или ноль, если данных нет.
 Автоматического срока удаления и кнопки удаления старых отчётов сейчас нет.
-Отключение согласия прекращает новые отправки, но не удаляет прежние отчёты и
-аккаунт. Фиксированный срок хранения/удаления не обещается. Если это не подходит,
-оставьте согласие выключенным — приложение и VM продолжат работать.
+Чтобы запустить тест локально, выберите «Продолжить без отправки».
+Ранее отправленные отчёты и аккаунт Firebase сохраняются.

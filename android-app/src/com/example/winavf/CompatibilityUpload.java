@@ -11,6 +11,7 @@ import javax.crypto.spec.GCMParameterSpec;
 import java.security.KeyStore;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.io.*;
 import javax.net.ssl.HttpsURLConnection;
 
@@ -18,10 +19,38 @@ import javax.net.ssl.HttpsURLConnection;
 final class CompatibilityUpload {
     private static final String KEY="AIzaSyC74CdEnXSWxud-970jt4em5eN7jws4vBc"; // Public client configuration, not admin credential.
     private static final String PROJECT="u-avf-7481c",ALIAS="uavf.compatibility.auth.v1";
-    static synchronized String send(Context context,SharedPreferences consent,JSONObject fields) throws Exception {
-        if(!consent.getBoolean("share_compatibility_report",false))return "Sharing is off";
+    private static final String DOCUMENTS="projects/"+PROJECT+"/databases/(default)/documents";
+    private static final String FIRESTORE="https://firestore.googleapis.com/v1/"+DOCUMENTS;
+    private static final int SLOT_LIMIT=32;
+
+    record Group(String manufacturer, String model, int androidApi, int ramGiB, int cpuCount) {
+        static Group forDevice(String manufacturer, String model, int api, long memory, int cpus) {
+            long gib=1L<<30;
+            int ram=(int)Math.max(0,Math.min(999,(memory+gib-1)/gib));
+            int cpuCount=Math.max(1,Math.min(999,cpus));
+            return new Group(slug(manufacturer,48),slug(model,64),api,ram,cpuCount);
+        }
+
+        String configuration() {
+            return "api"+androidApi+"-ram"+ramGiB+"-cpu"+cpuCount;
+        }
+
+        JSONObject deviceFields() throws JSONException {
+            return new JSONObject().put("androidApi",integer(androidApi))
+                    .put("ramGiB",integer(ramGiB)).put("cpuCount",integer(cpuCount));
+        }
+    }
+
+    private static String slug(String value,int limit) {
+        String key=(value==null?"":value).toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+","-");
+        key=key.replaceAll("^-+|-+$","");
+        return key.isEmpty()?"unknown":key.substring(0,Math.min(limit,key.length()));
+    }
+
+    static synchronized String send(Context context,boolean consent,String run,Group group,JSONObject fields) throws Exception {
+        if(!consent)return "Sharing is off";
+        if(!run.matches("[a-f0-9]{32}"))throw new IOException("Missing compatibility run ID");
         SharedPreferences auth=context.getSharedPreferences("compatibility_auth",Context.MODE_PRIVATE);
-        int next=auth.getInt("next",0);if(next>=32)return "Report limit reached";
         String refresh=auth.getString("refresh",null),token,uid;
         if(refresh==null) {
             JSONObject a=post("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key="+KEY,"application/json","{\"returnSecureToken\":true}",null);
@@ -34,16 +63,50 @@ final class CompatibilityUpload {
             if(!uid.equals(auth.getString("uid","")))throw new IOException("Identity mismatch");
             if(!auth.edit().putString("refresh",seal(a.getString("refresh_token"))).commit())throw new IOException("Identity storage failed");
         }
-        if(!consent.getBoolean("share_compatibility_report",false))return "Sharing cancelled";
-        String name="projects/"+PROJECT+"/databases/(default)/documents/compatibility_reports/"+uid+"/runs/"+next;
-        JSONObject write=new JSONObject().put("update",new JSONObject().put("name",name).put("fields",fields))
-            .put("currentDocument",new JSONObject().put("exists",false)).put("updateTransforms",new JSONArray()
-            .put(new JSONObject().put("fieldPath","submittedAt").put("setToServerValue","REQUEST_TIME")));
-        post("https://firestore.googleapis.com/v1/projects/"+PROJECT+"/databases/(default)/documents:commit","application/json",
-            new JSONObject().put("writes",new JSONArray().put(write)).toString(),token);
-        auth.edit().putInt("next",next+1).apply();return "Report sent to developers";
+        String owner="/compatibility_reporters/"+uid;
+        String receipt=owner+"/receipts/"+run;
+        if(getDocument(receipt,token)!=null)return "Compatibility report already sent";
+        for(int next=Math.max(0,auth.getInt("next_v2",0));next<SLOT_LIMIT;next++) {
+            String slot=Integer.toString(next);
+            String slotPath=owner+"/slots/"+slot;
+            if(getDocument(slotPath,token)!=null) {
+                auth.edit().putInt("next_v2",next+1).apply();
+                continue;
+            }
+            String report="/compatibility_devices/"+group.manufacturer()+"/"+group.model()
+                    +"/"+group.configuration()+"/reporters/"+uid+"/tests/"+run;
+            JSONObject metadata=new JSONObject().put("manufacturer",value(group.manufacturer()))
+                    .put("model",value(group.model())).put("configuration",value(group.configuration()))
+                    .put("slot",value(slot)).put("layout",value("direct"));
+            JSONObject write=create(report,fields.put("slot",value(slot)));
+            write.put("updateTransforms",new JSONArray().put(
+                    new JSONObject().put("fieldPath","submittedAt").put("setToServerValue","REQUEST_TIME")));
+            JSONArray writes=new JSONArray().put(write).put(create(receipt,metadata))
+                    .put(create(slotPath,new JSONObject().put("run",value(run))));
+            try {
+                post(FIRESTORE+":commit","application/json",new JSONObject().put("writes",writes).toString(),token);
+            } catch(IOException error) {
+                try {
+                    if(getDocument(receipt,token)!=null)return "Compatibility report already sent";
+                } catch(Exception confirmationError) {
+                    error.addSuppressed(confirmationError);
+                }
+                throw error;
+            }
+            auth.edit().putInt("next_v2",next+1).apply();
+            return "Report sent to developers";
+        }
+        return "Report limit reached";
+    }
+    private static JSONObject create(String path,JSONObject fields)throws JSONException {
+        return new JSONObject().put("update",new JSONObject().put("name",DOCUMENTS+path).put("fields",fields))
+                .put("currentDocument",new JSONObject().put("exists",false));
+    }
+    private static JSONObject getDocument(String path,String token)throws Exception {
+        return request(FIRESTORE+path,null,null,token,true);
     }
     static JSONObject value(String v)throws Exception{return new JSONObject().put("stringValue",v==null?"":v);}
+    static JSONObject integer(long value)throws JSONException{return new JSONObject().put("integerValue",Long.toString(value));}
     static JSONObject map(JSONObject v)throws Exception{return new JSONObject().put("mapValue",new JSONObject().put("fields",v));}
     private static SecretKey key()throws Exception {
         KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);
@@ -64,12 +127,21 @@ final class CompatibilityUpload {
         return new String(c.doFinal(Base64.decode(p[1],Base64.NO_WRAP)),StandardCharsets.UTF_8);
     }
     private static JSONObject post(String url,String type,String body,String token)throws Exception {
+        return request(url,type,body,token,false);
+    }
+    private static JSONObject request(String url,String type,String body,String token,boolean missingOk)throws Exception {
         HttpsURLConnection c=(HttpsURLConnection)new URL(url).openConnection();
-        c.setInstanceFollowRedirects(false);c.setConnectTimeout(15000);c.setReadTimeout(15000);c.setRequestMethod("POST");c.setDoOutput(true);c.setRequestProperty("Content-Type",type);
+        c.setInstanceFollowRedirects(false);c.setConnectTimeout(15000);c.setReadTimeout(15000);
+        c.setRequestMethod(body==null?"GET":"POST");
         if(token!=null)c.setRequestProperty("Authorization","Bearer "+token);
         try {
-            byte[] b=body.getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(b.length);
-            try(OutputStream out=c.getOutputStream()){out.write(b);}int status=c.getResponseCode();
+            if(body!=null) {
+                c.setDoOutput(true);c.setRequestProperty("Content-Type",type);
+                byte[] data=body.getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(data.length);
+                try(OutputStream out=c.getOutputStream()){out.write(data);}
+            }
+            int status=c.getResponseCode();
+            if(missingOk&&status==404)return null;
             if(status<200||status>=300) {
                 String detail="";
                 try(InputStream error=c.getErrorStream()) {
@@ -81,7 +153,7 @@ final class CompatibilityUpload {
                 throw new IOException((url.contains("firestore")?"Firestore":"Auth")+" HTTP "+status+" "+detail.substring(0,Math.min(160,detail.length())));
             }
             try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()) {
-                b=new byte[4096];int n;while((n=in.read(b))>=0){if(out.size()+n>65536)throw new IOException("Response too large");out.write(b,0,n);}
+                byte[] b=new byte[4096];int n;while((n=in.read(b))>=0){if(out.size()+n>65536)throw new IOException("Response too large");out.write(b,0,n);}
                 return new JSONObject(out.toString(StandardCharsets.UTF_8));
             }
         } finally {c.disconnect();}
