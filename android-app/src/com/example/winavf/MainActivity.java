@@ -23,7 +23,6 @@ import com.example.winavf.workspace.DisplaySettings.Mode;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PermissionInfo;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -38,7 +37,6 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.ParcelFileDescriptor;
-import android.os.Process;
 import android.os.SystemClock;
 import android.os.Build.VERSION;
 import android.system.Os;
@@ -68,8 +66,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintWriter;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
@@ -195,6 +191,7 @@ public final class MainActivity extends Activity {
    private UbuntuWorkspaceStorage ubuntuStorage;
    private GuestMediaFiles guestMediaFiles;
    private ConsoleLoopbackProbe consoleLoopback;
+   private AvfDebugDiagnostics avfDebugDiagnostics;
    private WindowsBootProbes windowsBootProbes;
    private final Runnable transitionTick = new Runnable() {
       public void run() {
@@ -306,6 +303,7 @@ public final class MainActivity extends Activity {
       this.diagnostics = new RuntimeDiagnostics(this.getPreferences(0));
       this.guestMediaFiles = new GuestMediaFiles(this.getAssets());
       this.consoleLoopback = new ConsoleLoopbackProbe(this, this.guestMediaFiles, this::show);
+      this.avfDebugDiagnostics = new AvfDebugDiagnostics(this, this.guestMediaFiles, this::show);
       this.windowsBootProbes = new WindowsBootProbes(this.getExternalFilesDir(null), this::show);
       this.ubuntuStorage = new UbuntuWorkspaceStorage(this, this.getPreferences(0), this.lifecycle,
             () -> this.isManagedVmRunning() || this.activeFrameVmName != null);
@@ -1681,7 +1679,7 @@ public final class MainActivity extends Activity {
          this.startUbuntuVsockHelloProbe(vm, installed);
          this.startUbuntuFrameBridge(vm);
          this.recordUbuntuBoot(prepared, handoff, firstBoot, reinstall, mavk);
-         if (handoff) this.scheduleUbuntuInstallerAutostart();
+         if (handoff) this.scheduleUbuntuInstallerAutostart(vm);
          this.runOnUiThread(() -> {
             this.homePanel.setVisibility(View.GONE);
             this.status.setVisibility(View.VISIBLE);
@@ -1720,92 +1718,21 @@ public final class MainActivity extends Activity {
       }
    }
 
-   private void scheduleUbuntuInstallerAutostart() {
-      (new Thread(() -> {
-         long var1 = System.currentTimeMillis() + 300000L;
-
-         while(this.vmMayBeRunning && this.ubuntuGuestRuntimeRevision == 0 && System.currentTimeMillis() < var1) {
-            try {
-               Thread.sleep(250L);
-            } catch (InterruptedException var7) {
-               Thread.currentThread().interrupt();
-               return;
-            }
-         }
-
-         if (this.vmMayBeRunning && this.ubuntuGuestRuntimeRevision == 1) {
-            var1 = System.currentTimeMillis() + 300000L;
-
-            while(this.vmMayBeRunning && !this.displayConnection.hasInput() && System.currentTimeMillis() < var1) {
-               try {
-                  Thread.sleep(250L);
-               } catch (InterruptedException var6) {
-                  Thread.currentThread().interrupt();
-                  return;
-               }
-            }
-
-            OutputStream var3 = this.displayConnection.input();
-            if (this.vmMayBeRunning && var3 != null) {
-               try {
-                  Thread.sleep(2500L);
-                  this.sendInstallerLaunch(var3);
-                  this.lifecycle.install(VmLifecycle.Install.INSTALLING);
-                  this.appendUbuntuInstallerAutostartReport("INSTALLER_AUTOSTART=ALLOWLISTED_REQUEST_SENT");
-                  Thread.sleep(8000L);
-                  this.sendInstallerKey(var3, 65513, true);
-                  this.sendInstallerKey(var3, 65479, true);
-                  this.sendInstallerKey(var3, 65479, false);
-                  this.sendInstallerKey(var3, 65513, false);
-                  Thread.sleep(250L);
-                  this.sendInstallerKey(var3, 65480, true);
-                  this.sendInstallerKey(var3, 65480, false);
-                  this.displayConnection.drain();
-                  this.appendUbuntuInstallerAutostartReport("INSTALLER_FULLSCREEN_REQUEST=ALT_F10_AND_F11_SENT");
-                  this.appendUbuntuInstallerAutostartReport("INSTALLER_WINDOW_VERIFIED=NOT_AVAILABLE_FROM_CURRENT_AVF_API");
-                  this.runOnUiThread(() -> this.status.setText("Ubuntu Setup is opening full-screen…"));
-               } catch (Throwable var5) {
-                  this.appendUbuntuInstallerAutostartReport("INSTALLER_AUTOSTART=FAILED " + rootMessage(var5));
-               }
-
-            } else {
-               this.appendUbuntuInstallerAutostartReport("INSTALLER_AUTOSTART=NO_FRAME_INPUT_TIMEOUT");
-            }
-         } else {
-            this.appendUbuntuInstallerAutostartReport("INSTALLER_AUTOSTART=SKIPPED_NOT_LIVE_INSTALL_PROFILE guest_revision=" + this.ubuntuGuestRuntimeRevision);
-         }
-      }, "U-AVF-ubuntu-installer-autostart")).start();
+   private void scheduleUbuntuInstallerAutostart(Object vm) {
+      new UbuntuInstallerAutostart(this.displayConnection,
+            () -> this.vmMayBeRunning && this.lifecycle.owns(vm),
+            () -> this.ubuntuGuestRuntimeRevision, () -> this.lifecycle.install(VmLifecycle.Install.INSTALLING),
+            this::appendUbuntuInstallerAutostartReport,
+            () -> this.runOnUiThread(() -> this.status.setText("Ubuntu Setup is opening full-screen…"))).start();
    }
 
-   private void sendInstallerLaunch(OutputStream stream) throws Exception {
-      this.displayConnection.sendAndWait(stream, GuestInput.START_INSTALLER, 1, 1, 0, true);
-   }
-
-   private void sendInstallerKey(OutputStream stream, int keysym, boolean down) throws Exception {
-      this.displayConnection.sendAndWait(stream, GuestInput.KEY, down ? 1 : 0, keysym, 0, false);
-   }
-
-   private void appendUbuntuInstallerAutostartReport(String var1) {
-      try {
-         FileOutputStream var2 = new FileOutputStream(new File(this.getExternalFilesDir((String)null), "ubuntu-install-runtime-report.txt"), true);
-
-         try {
-            var2.write((var1 + "\n").getBytes(StandardCharsets.UTF_8));
-         } catch (Throwable var6) {
-            try {
-               var2.close();
-            } catch (Throwable var5) {
-               var6.addSuppressed(var5);
-            }
-
-            throw var6;
-         }
-
-         var2.close();
-      } catch (Exception var7) {
-         Log.w("U-AVF", "Cannot append installer autostart report", var7);
+   private void appendUbuntuInstallerAutostartReport(String message) {
+      File report = new File(this.getExternalFilesDir(null), "ubuntu-install-runtime-report.txt");
+      try (var output = new FileOutputStream(report, true)) {
+         output.write((message + "\n").getBytes(StandardCharsets.UTF_8));
+      } catch (IOException error) {
+         Log.w("U-AVF", "Cannot append installer autostart report", error);
       }
-
    }
 
    private void showFigmaWorkspaceSettings() {
@@ -2974,10 +2901,10 @@ public final class MainActivity extends Activity {
       debugWorker(intent, "uefi_serial_escape_probe", "WinAVF-uefi-serial-escape", this::startUefiSerialEscapeProbe);
       debugWorker(intent, "vsock_hello_probe", "WinAVF-vsock-hello", this::startVsockHelloProbe);
       debugWorker(intent, "rollback", "WinAVF-rollback", this::rollbackLastPatch);
-      debugWorker(intent, "audit", "WinAVF-audit", this::auditVirtualizationCapabilities);
+      debugWorker(intent, "audit", "WinAVF-audit", this.avfDebugDiagnostics::auditCapabilities);
       if (debugAction(intent, "synthetic_frame")) this.emitSyntheticFrameForSurfaceAudit();
-      debugWorker(intent, "display_host_audit", "WinAVF-display-audit", this::auditNativeAvfDisplayAccess);
-      debugWorker(intent, "console_input_api_probe", "WinAVF-console-input-api", this::probeConsoleInputApi);
+      debugWorker(intent, "display_host_audit", "WinAVF-display-audit", this.avfDebugDiagnostics::auditDisplayAccess);
+      debugWorker(intent, "console_input_api_probe", "WinAVF-console-input-api", this.avfDebugDiagnostics::probeConsoleInput);
       debugWorker(intent, "console_binary_loopback", "WinAVF-console-binary-loopback", this.consoleLoopback::run);
       debugWorker(intent, "cleanup_console_binary_loopback", "WinAVF-console-binary-cleanup", this.consoleLoopback::cleanup);
       if (debugAction(intent, "kd_bridge")) {
@@ -3044,226 +2971,6 @@ public final class MainActivity extends Activity {
       ByteCodec.putLe32(var1, 20, (int)var5.getValue());
       this.frameDecoder.feed(var1, 0, var1.length);
       this.show("Synthetic WAVF surface audit frame submitted.");
-   }
-
-   private void auditVirtualizationCapabilities() {
-      File var1 = new File(this.getExternalFilesDir((String)null), "avf-capability-audit.txt");
-      String[] var2 = new String[]{"android.system.virtualmachine.VirtualMachineManager", "android.system.virtualmachine.VirtualMachine", "android.system.virtualmachine.VirtualMachineConfig", "android.system.virtualmachine.VirtualMachineConfig$Builder", "android.system.virtualmachine.VirtualMachineCustomImageConfig", "android.system.virtualmachine.VirtualMachineCustomImageConfig$Builder", "android.system.virtualmachine.VirtualMachineCustomImageConfig$Disk", "android.system.virtualmachine.VirtualMachineCustomImageConfig$DisplayConfig", "android.system.virtualmachine.VirtualMachineCustomImageConfig$DisplayConfig$Builder", "android.system.virtualmachine.VirtualMachineCustomImageConfig$GpuConfig", "android.system.virtualmachine.VirtualMachineCustomImageConfig$GpuConfig$Builder", "android.system.virtualmachine.VirtualMachineDescriptor", "android.system.virtualmachine.VirtualMachineCallback"};
-
-      try {
-         PrintWriter var3 = new PrintWriter(new FileOutputStream(var1, false));
-
-         try {
-            var3.println("fingerprint=" + Build.FINGERPRINT);
-            var3.println("sdk=" + VERSION.SDK_INT);
-
-            for(String var7 : var2) {
-               try {
-                  Class var8 = Class.forName(var7);
-                  var3.println("CLASS " + var7 + " AVAILABLE");
-                  Constructor[] var9 = var8.getDeclaredConstructors();
-                  Arrays.sort(var9, (var0, var1x) -> var0.toString().compareTo(var1x.toString()));
-
-                  for(Constructor var13 : var9) {
-                     var3.println("  CONSTRUCTOR " + String.valueOf(var13));
-                  }
-
-                  Method[] var27 = var8.getDeclaredMethods();
-                  Arrays.sort(var27, (var0, var1x) -> var0.toString().compareTo(var1x.toString()));
-
-                  for(Method var14 : var27) {
-                     String var15 = var14.toString();
-                     if (var15.toLowerCase().matches(".*(disk|display|graphics|gpu|surface|console|input|keyboard|mouse|touch|virtio|socket|vsock).*")) {
-                        var3.println("  METHOD " + var15);
-                     }
-                  }
-
-                  Field[] var29 = var8.getDeclaredFields();
-                  Arrays.sort(var29, (var0, var1x) -> var0.toString().compareTo(var1x.toString()));
-
-                  for(Field var35 : var29) {
-                     String var16 = var35.toString();
-                     if (var16.toLowerCase().matches(".*(disk|display|graphics|gpu|surface|console|input|keyboard|mouse|touch|virtio|socket|vsock).*")) {
-                        var3.println("  FIELD " + var16);
-                     }
-                  }
-               } catch (Throwable var18) {
-                  var3.println("CLASS " + var7 + " UNAVAILABLE " + rootMessage(var18));
-               }
-            }
-
-            String[] var21 = new String[]{"android.permission.MANAGE_VIRTUAL_MACHINE", "android.permission.USE_CUSTOM_VIRTUAL_MACHINE", "android.permission.VIRTUAL_INPUT_DEVICE"};
-
-            for(String var25 : var21) {
-               PermissionInfo var26 = this.getPackageManager().getPermissionInfo(var25, 0);
-               var3.println("PERMISSION " + var25 + " check=" + this.checkSelfPermission(var25) + " protection=" + var26.protectionLevel);
-            }
-         } catch (Throwable var19) {
-            try {
-               var3.close();
-            } catch (Throwable var17) {
-               var19.addSuppressed(var17);
-            }
-
-            throw var19;
-         }
-
-         var3.close();
-      } catch (Throwable var20) {
-         this.show("AVF capability audit failed: " + rootMessage(var20));
-         return;
-      }
-
-      this.show("AVF capability audit saved to " + var1.getAbsolutePath());
-   }
-
-   private void auditNativeAvfDisplayAccess() {
-      File var1 = new File(this.getExternalFilesDir((String)null), "native-avf-display-access-audit.txt");
-
-      try {
-         PrintWriter var2 = new PrintWriter(new FileOutputStream(var1, false));
-
-         try {
-            var2.println("fingerprint=" + Build.FINGERPRINT);
-            var2.println("uid=" + Process.myUid());
-            var2.println("permission.MANAGE_VIRTUAL_MACHINE=" + this.checkSelfPermission("android.permission.MANAGE_VIRTUAL_MACHINE"));
-            var2.println("permission.USE_CUSTOM_VIRTUAL_MACHINE=" + this.checkSelfPermission("android.permission.USE_CUSTOM_VIRTUAL_MACHINE"));
-            Class var3 = Class.forName("android.os.ServiceManager");
-            var2.println("CLASS android.os.ServiceManager=AVAILABLE");
-            Method var4 = var3.getMethod("getService", String.class);
-            var2.println("METHOD ServiceManager.getService=AVAILABLE");
-            Object var5 = var4.invoke((Object)null, "android.system.virtualizationservice");
-            String var10001 = var5 == null ? "NULL" : "AVAILABLE:" + var5.getClass().getName();
-            var2.println("BINDER android.system.virtualizationservice=" + var10001);
-
-            for(String var9 : new String[]{"android.system.virtualizationservice_internal.IVirtualizationServiceInternal", "android.system.virtualizationservice_internal.IVirtualizationServiceInternal$Stub", "android.crosvm.ICrosvmAndroidDisplayService", "android.crosvm.ICrosvmAndroidDisplayService$Stub"}) {
-               try {
-                  Class.forName(var9);
-                  var2.println("CLASS " + var9 + "=AVAILABLE");
-               } catch (Throwable var12) {
-                  var2.println("CLASS " + var9 + "=UNAVAILABLE:" + rootMessage(var12));
-               }
-            }
-
-            var2.println("RESULT=READ_ONLY_HOST_PATH_AUDIT_COMPLETE");
-         } catch (Throwable var13) {
-            try {
-               var2.close();
-            } catch (Throwable var11) {
-               var13.addSuppressed(var11);
-            }
-
-            throw var13;
-         }
-
-         var2.close();
-      } catch (Throwable var14) {
-         this.show("Native AVF display access audit failed: " + rootMessage(var14));
-         return;
-      }
-
-      this.show("Native AVF display access audit saved to " + var1.getAbsolutePath());
-   }
-
-   private void probeConsoleInputApi() {
-      File var1 = new File(this.getExternalFilesDir((String)null), "console-input-api-probe.txt");
-      Object var2 = null;
-      boolean var3 = false;
-
-      try {
-         PrintWriter var40 = new PrintWriter(new FileOutputStream(var1, false));
-
-         try {
-            var40.println("scope=NO_GUEST_RUN_NO_DISK_NO_PRODUCT_MEDIA");
-            Class var41 = Class.forName("android.system.virtualmachine.VirtualMachineConfig");
-            Class var6 = Class.forName(var41.getName() + "$Builder");
-            Object var7 = var6.getConstructor(Context.class).newInstance(this);
-            call(var7, "setProtectedVm", Boolean.TYPE, false);
-            call(var7, "setDebugLevel", Integer.TYPE, 1);
-            call(var7, "setConsoleInputDevice", String.class, "ttyS0");
-            call(var7, "setVmConsoleInputSupported", Boolean.TYPE, true);
-            File var8 = new File(this.getFilesDir(), "payload");
-            if (!var8.exists() && !var8.mkdirs()) {
-               throw new IllegalStateException("Cannot create payload directory");
-            }
-
-            File var9 = this.guestMediaFiles.copyAsset("u-boot-wrapper-v24.Image", new File(var8, "u-boot-wrapper-v24.Image"), -1L);
-            Class var10 = Class.forName("android.system.virtualmachine.VirtualMachineCustomImageConfig");
-            Class var11 = Class.forName(var10.getName() + "$Builder");
-            Object var12 = var11.getConstructor().newInstance();
-            call(var12, "setName", String.class, "winavf-console-input-probe-20260909");
-            call(var12, "setOsName", String.class, "winavf-console-input-probe");
-            call(var12, "setKernelPath", String.class, var9.getAbsolutePath());
-            Object var13 = call(var12, "build");
-            call(var7, "setCustomImageConfig", var10, var13);
-            Object var14 = call(var7, "build");
-            boolean var15 = (Boolean)var14.getClass().getMethod("isVmConsoleInputSupported").invoke(var14);
-            var40.println("config.isVmConsoleInputSupported=" + var15);
-            if (!var15) {
-               throw new IllegalStateException("Console-input flag was not persisted in config");
-            }
-
-            Class var16 = Class.forName("android.system.virtualmachine.VirtualMachineManager");
-            var2 = this.getSystemService(var16);
-            Object var17 = var2.getClass().getMethod("get", String.class).invoke(var2, "winavf-console-input-probe-20260909");
-            if (var17 != null) {
-               var2.getClass().getMethod("delete", String.class).invoke(var2, "winavf-console-input-probe-20260909");
-            }
-
-            Object var18 = var2.getClass().getMethod("create", String.class, var14.getClass()).invoke(var2, "winavf-console-input-probe-20260909", var14);
-            var3 = true;
-            OutputStream var19 = (OutputStream)var18.getClass().getMethod("getConsoleInput").invoke(var18);
-            var19.write(new byte[0]);
-            var19.flush();
-            var19.close();
-            var40.println("getConsoleInput=OUTPUT_STREAM_USABLE");
-            var40.println("result=PASS");
-            this.show("Console input API probe: OutputStream acquired.");
-         } catch (Throwable var37) {
-            try {
-               var40.close();
-            } catch (Throwable var36) {
-               var37.addSuppressed(var36);
-            }
-
-            throw var37;
-         }
-
-         var40.close();
-      } catch (Throwable var38) {
-         Throwable var4 = var38;
-
-         try {
-            PrintWriter var5 = new PrintWriter(new FileOutputStream(var1, true));
-
-            try {
-               var5.println("result=FAIL");
-               var5.println("error=" + rootMessage(var4));
-            } catch (Throwable var34) {
-               try {
-                  var5.close();
-               } catch (Throwable var33) {
-                  var34.addSuppressed(var33);
-               }
-
-               throw var34;
-            }
-
-            var5.close();
-         } catch (Throwable var35) {
-         }
-
-         this.show("Console input API probe failed: " + rootMessage(var38));
-      } finally {
-         if (var3 && var2 != null) {
-            try {
-               var2.getClass().getMethod("delete", String.class).invoke(var2, "winavf-console-input-probe-20260909");
-            } catch (Throwable var32) {
-            }
-         }
-
-      }
-
    }
 
    private void startTest() {

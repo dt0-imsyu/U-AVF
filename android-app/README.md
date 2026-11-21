@@ -22,7 +22,7 @@
 | Guest media files | `GuestMediaFiles.java` | Copies app assets into staging and publishes verified files only after the size and digest match. |
 | Guest readiness and audio | `UbuntuReadinessProbe.java`, `UbuntuAudioBridge.java` | LVH1 readiness, PCM header validation, stereo playback and vsock reports. |
 | Windows session | `WindowsSetupSession.java` | Follow the runtime service across display retry and installation reboot. |
-| Debug boot probes | `ConsoleLoopbackProbe.java`, `WindowsBootProbes.java` | Discrete firmware console and guest-agent probes routed by debug builds. |
+| Debug boot probes | `AvfDebugDiagnostics.java`, `ConsoleLoopbackProbe.java`, `WindowsBootProbes.java` | Framework capability reports, firmware console and guest-agent probes routed by debug builds. |
 | Viewport connection | `DisplayConnection.java`, `RawDisplayReceiver.java`, `GuestInput.java`, `SessionEdgeGesture.java` | Session lifetime, fallback frame transport, ordered UIN1 input, Android key/pointer mapping and the session drawer gesture. |
 
 `compile-java.ps1` compiles navigation, runtime state, storage and diagnostic history with an empty application classpath, then compiles the Android integration against them. The APK, Android component names and JNI package are shared with the existing application. Keep Android and generated APK resources out of those four packages.
