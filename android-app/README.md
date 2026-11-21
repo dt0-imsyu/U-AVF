@@ -8,22 +8,37 @@
 | --- | --- | --- |
 | Screen history | `src/com/example/winavf/navigation/` | Stable route IDs, Back history and return to the running desktop. The Activity owns Android view transitions. |
 | Android screen state | `ProductNavigationState.java`, `ProductTabs.java` | Android saved-state serialization and the main pager with its tab indicator. |
+| Home and workspace screens | `WorkspaceScreens.java` | Compose home tabs, workspace cards, installer review and Live media choices from the current state. |
+| Ubuntu settings tabs | `UbuntuSettingsTabs.java` | Bind memory, CPU, graphics, input, guest services and storage controls to workspace preferences and Activity actions. |
 | VM state | `src/com/example/winavf/runtime/` | VM lifecycle guards, owner identity, observed start and stop progress. Android callbacks and VM service binding live at the app boundary. |
 | Ubuntu serial console | `runtime/VmConsole.java`, `VmRuntimeService.java` | One reader and log per managed VM. Recreating the Activity replaces its observer while the reader keeps draining. |
 | Ubuntu Live media | `src/com/example/winavf/storage/UbuntuLiveMedia.java` | Select a boot media profile, verify the ISO and prepare the temporary image with its original GPT layout. The caller must exclude a running VM before writing. |
+| Ubuntu boot preparation | `UbuntuLiveSessionMedia.java`, `UbuntuWorkspaceBoot.java` | Select temporary and persistent boot media, preserve per-session display choices and record the boot and installer handoff. |
+| Ubuntu launch flow | `UbuntuLaunchFlow.java` | Coordinate AVF boot, readiness, Live versus installed settings and installer handoff. |
 | Diagnostic history | `src/com/example/winavf/diagnostics/` | Persisted row format, bounded history and report records. Android preferences and document export are app responsibilities. |
 | Diagnostic workflow | `RuntimeDiagnostics.java`, `CompatibilityAudit.java` | Collect VM lifecycle events, persist compatibility runs, and supply the local history and report views. |
+| Diagnostic screens | `DiagnosticsScreens.java` | Bind diagnostics and history views, clipboard copies and document-picker export. |
+| Compatibility session | `CompatibilitySession.java` | Own compatibility progress, restore the current result and submit selected fields only after consent. |
 | Display preferences | `src/com/example/winavf/workspace/DisplaySettings.java` | Android storage adapter for display mode, resolution per mode and the running session's transport preference. It reads and writes the existing keys. |
 | Android AVF | `src/com/example/winavf/AvfGuest.java` | VM manager and callback adapter for the Java AVF runtime. Guest lifecycle and UI reactions consume named events. |
 | Guest media | `UbuntuWorkspaceMedia.java`, `WindowsWorkspaceMedia.java` | Ubuntu installer integrity profiles and disk preparation. Windows ISO/WinPE import, persisted URI access and explicit boot choices. |
 | ISO selection and installation | `UbuntuIsoImport.java`, `WindowsSetupFlow.java` | Verified Ubuntu ISO staging, Windows setup dialogs and progress. The Activity owns document picker dispatch and VM startup. |
 | Ubuntu AVF configuration | `UbuntuVmConfig.java` | Named boot media and configuration options, AVF display, GPU and audio builders. |
 | Workspace disk | `UbuntuWorkspaceStorage.java` | Paths, allocation limits, checked disk changes and workspace preferences. |
+| Workspace actions | `UbuntuWorkspaceActions.java` | Ubuntu ISO selection, installation profiles and confirmed resize or deletion. |
 | Guest media files | `GuestMediaFiles.java` | Copies app assets into staging and publishes verified files only after the size and digest match. |
 | Guest readiness and audio | `UbuntuReadinessProbe.java`, `UbuntuAudioBridge.java` | LVH1 readiness, PCM header validation, stereo playback and vsock reports. |
-| Windows session | `WindowsSetupSession.java` | Follow the runtime service across display retry and installation reboot. |
+| Windows session | `WindowsSetupSession.java`, `WindowsSessionViewport.java` | Follow the runtime service and own viewport attachment, display retry and installation reboot. |
 | Debug boot probes | `AvfDebugDiagnostics.java`, `ConsoleLoopbackProbe.java`, `WindowsBootProbes.java` | Framework capability reports, firmware console and guest-agent probes routed by debug builds. |
+| Debug Ubuntu media | `UbuntuGenericBootMedia.java`, `UbuntuDiagnosticMedia.java`, `UbuntuBlockIoAudit.java` | Fixed staging layouts, checked fixtures and reports for the older debug boot and block I/O scenarios. |
+| Debug VM configuration | `DiagnosticVmConfig.java` | AVF config for the historical single-disk Windows, GNOME and recovery profiles. |
+| Debug commands | `DiagnosticCommands.java`, `DiagnosticVmLaunches.java` | Route test actions in debuggable builds and start the existing diagnostic media through AVF. |
+| Debug Windows media | `WindowsDiagnosticMedia.java`, `WindowsDiagnosticDiskReports.java` | Stage the legacy boot fixture, inspect its ESP and manage disposable witness files separately from the Windows ISO installer. |
+| Debug serial capture | `DiagnosticSerialCapture.java` | Record the historical VM console and detect firmware markers across reads. |
 | Viewport connection | `DisplayConnection.java`, `RawDisplayReceiver.java`, `GuestInput.java`, `SessionEdgeGesture.java` | Session lifetime, fallback frame transport, ordered UIN1 input, Android key/pointer mapping and the session drawer gesture. |
+| Embedded guest surfaces | `GuestDisplaySurfaces.java` | Own the Windows and Ubuntu decoder surface, Mavk surface, viewport fit and teardown. |
+| Session controls | `SessionControls.java` | Desktop menu, pointer capture, panel animation and display preferences during a VM session. |
+| Ubuntu display session | `UbuntuDisplaySession.java` | Select Mavk, H.264 or raw display, track the active guest and scope retries to the active viewport connection. |
 
 `compile-java.ps1` compiles navigation, runtime state, storage and diagnostic history with an empty application classpath, then compiles the Android integration against them. The APK, Android component names and JNI package are shared with the existing application. Keep Android and generated APK resources out of those four packages.
 

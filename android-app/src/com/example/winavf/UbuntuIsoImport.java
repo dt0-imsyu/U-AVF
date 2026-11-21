@@ -15,7 +15,7 @@ import java.util.function.LongConsumer;
 final class UbuntuIsoImport {
     static final String NAME = "ubuntu-24.04.5-desktop-arm64.iso";
     static final long BYTES = 3_967_463_424L;
-    private static final String SHA256 = "2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14";
+    static final String SHA256 = "2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14";
     private static final long PROGRESS_STEP = 512L << 20;
 
     private UbuntuIsoImport() {}

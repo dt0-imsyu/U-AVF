@@ -18,6 +18,7 @@ public final class VmLifecycle {
     public synchronized Install install() { return install; }
     public synchronized String error() { return error; }
     public synchronized String stopReason() { return stopReason; }
+    public synchronized Object owner() { return owner; }
     public synchronized boolean owns(Object vm) { return owner==vm; }
     public synchronized void attach(Object vm) { owner=vm; }
     public synchronized boolean beginStart() {

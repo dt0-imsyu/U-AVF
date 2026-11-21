@@ -75,6 +75,10 @@ final class AvfGuest {
         vm.getClass().getMethod("run").invoke(vm);
     }
 
+    static void stop(Object vm) throws Exception {
+        vm.getClass().getMethod("stop").invoke(vm);
+    }
+
     static void observe(Object vm, Executor executor, Consumer<String> stopped, Consumer<String> error) throws Exception {
         Class<?> callback = Class.forName(FRAMEWORK + "VirtualMachineCallback");
         Object listener = Proxy.newProxyInstance(callback.getClassLoader(), new Class<?>[]{callback},

@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.file.Files;
+import java.util.function.Consumer;
 
 /** Stages boot assets and disk images for the guest launchers. */
 final class GuestMediaFiles {
@@ -16,6 +17,14 @@ final class GuestMediaFiles {
 
     GuestMediaFiles(AssetManager assets) {
         this.assets = assets;
+    }
+
+    boolean hasAsset(String asset) {
+        try (InputStream input = assets.open(asset)) {
+            return input.read() != -1;
+        } catch (IOException absent) {
+            return false;
+        }
     }
 
     File copyAsset(String asset, File target, long expectedBytes) throws IOException {
@@ -62,6 +71,19 @@ final class GuestMediaFiles {
         }
         if (target.length() != bytes) throw new IOException("Setup-medium copy has unexpected size");
         return target;
+    }
+
+    static void verifyDisk(File disk, long bytes, String sha256, String label,
+                           boolean skipValidation, Consumer<String> show) throws IOException {
+        if (!disk.isFile() || disk.length() == 0) throw new IOException("Missing or empty " + label + ": " + disk);
+        if (skipValidation) {
+            show.accept("Disk verification skipped for " + label + ".");
+            return;
+        }
+        if (bytes >= 0 && disk.length() != bytes) throw new IOException(label + " size mismatch");
+        if (sha256 != null && !sha256.equals(Digest.hex(Digest.sha256File(disk)))) {
+            throw new SecurityException(label + " SHA-256 mismatch");
+        }
     }
 
     static File sparseTarget(File target, long bytes) throws IOException {
