@@ -67,7 +67,6 @@ public final class MainActivity extends Activity {
    private UbuntuSettingsTabs ubuntuSettingsTabs;
    private final VmLifecycle lifecycle = new VmLifecycle();
    private final RuntimeTransition transition = new RuntimeTransition();
-   private RuntimeTransitionView transitionView;
    private RuntimeDiagnostics diagnostics;
    private UbuntuWorkspaceStorage ubuntuStorage;
    private UbuntuWorkspaceActions ubuntuActions;
@@ -78,17 +77,7 @@ public final class MainActivity extends Activity {
    private WindowsBootProbes windowsBootProbes;
    private WindowsDiagnosticDiskReports windowsDiskReports;
    private UbuntuBlockIoAudit ubuntuBlockIoAudit;
-   private final Runnable transitionTick = new Runnable() {
-      public void run() {
-         if (activityDestroyed) return;
-         recordObservedRuntimeEvents();
-         if (transitionView != null) {
-            transitionView.allowForceStop(isManagedVmRunning());
-            transitionView.refresh();
-         }
-         if (transition.visible()) uiHandler.postDelayed(this,1000);
-      }
-   };
+   private TransitionController transitionController;
    private volatile boolean activityDestroyed;
    private DiagnosticVmLaunches diagnosticLaunches;
    private DiagnosticCommands diagnosticCommands;
@@ -152,6 +141,7 @@ public final class MainActivity extends Activity {
 
    private void initializeControllers() {
       this.uiHandler = new Handler(this.getMainLooper());
+      this.transitionController = this.createTransitionController();
       this.ubuntuServices = this.createUbuntuGuestServices();
       this.guestSession = this.createGuestVmSession();
       this.imagePatches = new WindowsImagePatches(this, this::show);
@@ -183,6 +173,20 @@ public final class MainActivity extends Activity {
       this.initializeDebugCommands();
    }
 
+   /** Wires the boot/shutdown overlay to the screen and the session controls. */
+   private TransitionController createTransitionController() {
+      return new TransitionController(this, this.transition, this.uiHandler,
+            new TransitionController.Host() {
+               @Override public boolean canForceStop() { return isManagedVmRunning(); }
+               @Override public void forceStop(boolean forReboot) {
+                  guestSession.confirmForceStop(forReboot ? PowerAction.REBOOT : PowerAction.SHUTDOWN);
+               }
+               @Override public void dismissed() { renderProductScreen(ProductScreen.MODE_SELECTION); }
+               @Override public void recordEvents() { recordObservedRuntimeEvents(); }
+               @Override public void desktopRevealed() { showRunningDesktop(); }
+               @Override public boolean isWindows() { return selectedProfile == LaunchProfile.WINDOWS; }
+            });
+   }
    private UbuntuGuestServices createUbuntuGuestServices() {
       return new UbuntuGuestServices(this, lifecycle, transition, new UbuntuGuestServices.Host() {
          public boolean installedDiskExists() { return persistentUbuntuDiskFile().isFile(); }
@@ -191,7 +195,7 @@ public final class MainActivity extends Activity {
          public void updatePlasmaState(String state) { MainActivity.this.updatePlasmaInstallState(state); }
          public void displayGuestReady(boolean ready) { ubuntuDisplay.guestReady(ready); }
          public void startDisplay(Object vm) { startUbuntuFrameBridge(vm); }
-         public void refreshTransition() { if (transitionView != null) transitionView.refresh(); }
+         public void refreshTransition() { MainActivity.this.transitionController.refresh(); }
          public void show(String message) { MainActivity.this.show(message); }
       });
    }
@@ -213,8 +217,8 @@ public final class MainActivity extends Activity {
          public void startUbuntuLive() { MainActivity.this.startUbuntuLive(); }
          public void finishHandoff() { ubuntuLaunch.finishHandoff(); }
          public void beginRuntimeTransition(RuntimeTransition.Mode mode) { MainActivity.this.beginRuntimeTransition(mode); }
-         public void refreshTransition() { transitionTick.run(); }
-         public void refreshTransitionView() { if (transitionView != null) transitionView.refresh(); }
+         public void refreshTransition() { MainActivity.this.transitionController.refresh(); }
+         public void refreshTransitionView() { MainActivity.this.transitionController.refresh(); }
          public GuestControl control() { return ubuntuServices.control(); }
          public void disconnectGuestControls(String detail) { ubuntuServices.disconnect(detail); }
          public void resetGuestFrameSurface() { MainActivity.this.resetGuestFrameSurface(); }
@@ -476,6 +480,7 @@ public final class MainActivity extends Activity {
    @Override protected void onDestroy() {
       this.getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(this.navigationBackCallback);
       this.activityDestroyed = true;
+      if (this.transitionController != null) this.transitionController.destroyed();
       if (this.diagnosticCommands != null) this.diagnosticCommands.close();
       if (this.windowsSession != null) this.windowsSession.close();
       guestSession.detachUbuntuConsole();
@@ -695,7 +700,7 @@ public final class MainActivity extends Activity {
       }
       if (!this.frameSession.visible()) {
          if (this.isManagedVmRunning()) {
-            if(this.transition.visible())this.transitionTick.run();
+            if(this.transition.visible())this.transitionController.resume();
             else guestSession.reconnectRunningFrameVmIfPresent();
          } else {
             this.show("There is no running virtual machine to return to.");
@@ -1154,10 +1159,14 @@ public final class MainActivity extends Activity {
       return VERSION.SDK_INT < 31 || this.checkSelfPermission("android.permission.MANAGE_VIRTUAL_MACHINE") == 0 && this.checkSelfPermission("android.permission.USE_CUSTOM_VIRTUAL_MACHINE") == 0;
    }
 
+   /**
+    * Starts the boot/shutdown overlay.
+    *
+    * Callers include the VM launch thread, so the transition state is set here
+    * (it carries the timestamp) while every view touch is moved to the UI thread.
+    */
    private void beginRuntimeTransition(RuntimeTransition.Mode mode) {
-      // Retain the reboot evidence until its newly started VM produces a frame.
-      if (!(mode==RuntimeTransition.Mode.BOOT && this.transition.mode()==RuntimeTransition.Mode.REBOOT))
-         this.transition.begin(mode,android.os.SystemClock.elapsedRealtime());
+      this.transitionController.begin(mode);
       this.runOnUiThread(() -> {
          if (this.activityDestroyed) return;
          this.sessionControls.closeImmediately();
@@ -1165,51 +1174,51 @@ public final class MainActivity extends Activity {
          this.homePanel.setVisibility(8);
          this.sessionControls.hideButton();
          this.status.setVisibility(8);
-         if (this.transitionView==null) {
-            this.transitionView=new RuntimeTransitionView(this,this.transition,
-                  ()->this.selectedProfile==LaunchProfile.WINDOWS,
-                  ()->guestSession.confirmForceStop(this.transition.operation() == RuntimeTransition.Mode.REBOOT
-                        ? PowerAction.REBOOT : PowerAction.SHUTDOWN),
-                  ()->{this.transition.dismiss();this.transitionView.setVisibility(8);
-                     this.renderProductScreen(ProductScreen.MODE_SELECTION);});
-            this.page.addView(this.transitionView,new FrameLayout.LayoutParams(-1,-1));
-         }
-         this.uiHandler.removeCallbacks(this.transitionTick);
-         this.transitionTick.run();
       });
    }
 
+   /** Reveals the guest desktop, or restarts the overlay tick while it is still up. */
    private void showRunningDesktop() {
-      if (this.transition.visible()) {
-         this.runOnUiThread(this.transitionTick);
+      if (this.transitionController.visible()) {
+         this.transitionController.resume();
          return;
       }
-      if (this.transitionView != null) this.transitionView.setVisibility(8);
-      this.sessionControls.closeImmediately();
-      this.homePanel.setVisibility(8);
-      this.status.setVisibility(8);
-      this.updateRuntimeEdgeExclusion();
-      this.sessionControls.revealButton();
+      this.runOnUiThread(() -> {
+         if (this.activityDestroyed) return;
+         this.transitionController.hideOverlay();
+         this.sessionControls.closeImmediately();
+         this.homePanel.setVisibility(8);
+         this.status.setVisibility(8);
+         this.updateRuntimeEdgeExclusion();
+         this.sessionControls.revealButton();
+      });
    }
 
+   /**
+    * Completes the boot transition once a real guest frame has been shown.
+    *
+    * This runs on the frame path, which can be several times per second, so the
+    * transition state is claimed exactly once here; the controller then only
+    * schedules the reveal.
+    */
    private void completeDesktopTransition() {
-      if(!this.transition.desktop(android.os.SystemClock.elapsedRealtime())) return;
-      this.runOnUiThread(this::recordObservedRuntimeEvents);
-      String sessionOs=this.selectedProfile==LaunchProfile.WINDOWS?"windows":"ubuntu";
-      android.content.SharedPreferences.Editor history=this.getPreferences(0).edit()
-            .putLong(this.transition.events().containsKey("Windows setup frame")?"last_setup_windows":
-                  "windows".equals(sessionOs)?"last_display_windows":"last_desktop_ubuntu",System.currentTimeMillis());
-      if("ubuntu".equals(sessionOs))history.putString("last_desktop_graphics_ubuntu",
-            this.displaySurfaces.renderer()!=null?"Mavk · кадр показан":
-                  this.displaySurfaces.decoder()!=null?"H.264 · кадр показан":"Кадр показан");
+      if (!this.transitionController.desktopReached()) return;
+      this.recordDesktopHistory();
+   }
+
+   /** Records when the desktop appeared so the workspace can report it later. */
+   private void recordDesktopHistory() {
+      String sessionOs = this.selectedProfile == LaunchProfile.WINDOWS ? "windows" : "ubuntu";
+      android.content.SharedPreferences.Editor history = this.getPreferences(0).edit()
+            .putLong(this.transition.events().containsKey("Windows setup frame") ? "last_setup_windows"
+                  : "windows".equals(sessionOs) ? "last_display_windows" : "last_desktop_ubuntu",
+                  System.currentTimeMillis());
+      if ("ubuntu".equals(sessionOs)) {
+         history.putString("last_desktop_graphics_ubuntu",
+               this.displaySurfaces.renderer() != null ? "Mavk · кадр показан"
+                     : this.displaySurfaces.decoder() != null ? "H.264 · кадр показан" : "Кадр показан");
+      }
       history.apply();
-      final int completedGeneration=this.transition.generation();
-      this.runOnUiThread(()->{
-         if(this.transitionView!=null) this.transitionView.refresh();
-         this.uiHandler.postDelayed(()->{
-            if(!this.activityDestroyed && this.transition.finishDesktop(completedGeneration)) this.showRunningDesktop();
-         },450);
-      });
    }
 
    private void revealRunningControls() {
@@ -1287,9 +1296,9 @@ public final class MainActivity extends Activity {
             this.frameSurface, this.displayConnection, this.guestInput, new WindowsSessionViewport.Host() {
          @Override public void selectWindows() { selectedProfile = LaunchProfile.WINDOWS; }
          @Override public void begin(RuntimeTransition.Mode mode) { beginRuntimeTransition(mode); }
-         @Override public void refreshTransition() { transitionTick.run(); }
+         public void refreshTransition() { MainActivity.this.transitionController.refresh(); }
          @Override public void showWorkspace() {
-            if (transitionView != null) transitionView.setVisibility(View.GONE);
+            transitionController.hideOverlay();
             showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
          }
          @Override public boolean frameVisible() { return MainActivity.this.frameSession.visible(); }
@@ -1438,7 +1447,7 @@ public final class MainActivity extends Activity {
       if (wasVisible || !this.transition.visible()) this.beginRuntimeTransition(RuntimeTransition.Mode.DISPLAY_RECONNECT);
       this.transition.failure(UiLanguage.text("Сеанс Ubuntu всё ещё работает. Mavk потерял вывод изображения."),
             SystemClock.elapsedRealtime());
-      this.transitionTick.run();
+      this.transitionController.resume();
    }
 
    private void presentUbuntuSurface(int width, int height, Runnable fit) {

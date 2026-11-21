@@ -58,6 +58,13 @@ public final class RuntimeTransitionTest {
         check(t.mode()==RuntimeTransition.Mode.DISPLAY_RECONNECT && !t.finishDesktop(reconnect),
                 "reconnect is pending until a frame");
         check(t.desktop(135200) && t.finishDesktop(reconnect),"real frame completes display reconnection");
+        // Regression: the frame path runs many times per second, so desktop() must
+        // report the completion exactly once. A second true would let a later
+        // frame re-hide an overlay that already belongs to a new launch.
+        int single=t.begin(RuntimeTransition.Mode.BOOT,136000);
+        check(t.desktop(136100),"first desktop frame claims the transition");
+        check(!t.desktop(136200),"repeated desktop frames must not claim it again");
+        check(t.finishDesktop(single),"claimed generation still finishes");
         if(args.length>0) {
             t.begin(RuntimeTransition.Mode.BOOT,140000);
             String serial;
