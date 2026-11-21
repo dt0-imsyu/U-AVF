@@ -33,6 +33,18 @@ final class AvfGuest {
         return manager.getClass().getMethod("get", String.class).invoke(manager, name);
     }
 
+    static void removeStopped(Context context, String name) throws Exception {
+        Object manager = manager(context);
+        synchronized (AvfGuest.class) {
+            Object vm = manager.getClass().getMethod("get", String.class).invoke(manager, name);
+            if (vm == null) return;
+            if (!"STOPPED".equals(state(vm))) {
+                throw new IllegalStateException("Cannot remove AVF workspace " + name + " while it is active.");
+            }
+            manager.getClass().getMethod("delete", String.class).invoke(manager, name);
+        }
+    }
+
     static void requireStopped(Context context, String name) throws Exception {
         Object vm = find(context, name);
         if (vm != null && !"STOPPED".equals(state(vm))) {

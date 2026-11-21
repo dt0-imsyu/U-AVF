@@ -11,6 +11,9 @@ import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 /**
  * Small stream and file helpers used by the media and probe paths.
@@ -23,6 +26,24 @@ final class IoUtil {
     private static final int TEXT_PROBE_BYTES = 128;
 
     private IoUtil() {}
+
+    static String formatBytes(long bytes) {
+        return String.format(java.util.Locale.ROOT, "%.0f GB", bytes / (double) (1L << 30));
+    }
+
+    static String rootMessage(Throwable error) {
+        while (error.getCause() != null) error = error.getCause();
+        return error.getClass().getSimpleName() + ": " + error.getMessage();
+    }
+
+    static void publishFile(File staging, File target) throws IOException {
+        try {
+            Files.move(staging.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException error) {
+            Files.move(staging.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
 
     /** Reads exactly {@code length} bytes or fails; a short read is never silent. */
     static byte[] readExactly(InputStream input, int length) throws IOException {

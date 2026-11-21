@@ -3,13 +3,14 @@
 // No third-party or previously granted rights are withdrawn.
 package com.example.winavf;
 
+import static com.example.winavf.IoUtil.formatBytes;
+import static com.example.winavf.IoUtil.rootMessage;
+
 import com.example.winavf.runtime.RuntimeTransition;
 import com.example.winavf.runtime.VmConsole;
 
 import com.example.winavf.runtime.VmLifecycle;
 
-import com.example.winavf.diagnostics.DiagnosticJournal;
-import com.example.winavf.diagnostics.CompatibilityHistory;
 import com.example.winavf.UbuntuWorkspaceMedia.Installer;
 import com.example.winavf.UbuntuWorkspaceMedia.Request;
 import com.example.winavf.navigation.ProductNavigation;
@@ -31,9 +32,6 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.GradientDrawable.Orientation;
-import android.media.AudioAttributes;
-import android.media.AudioFormat;
-import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -47,7 +45,6 @@ import android.system.Os;
 import android.text.TextUtils.TruncateAt;
 import android.util.Log;
 import android.view.KeyEvent;
-import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
@@ -71,7 +68,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintWriter;
-import java.io.RandomAccessFile;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -80,15 +76,8 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URL;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
-import java.security.DigestInputStream;
 import java.security.MessageDigest;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -105,7 +94,6 @@ public final class MainActivity extends Activity {
    private static final String VM_NAME = "winavf-gop-ebs-r1";
    private static final String CONSOLE_INPUT_PROBE_VM_NAME = "winavf-console-input-probe-20260909";
    private static final String CONSOLE_BINARY_ECHO_VM_NAME = "winavf-console-binary-echo-20260909";
-   private static final byte[] CONSOLE_BINARY_ECHO_READY;
    private static final int CONSOLE_BINARY_ECHO_BYTES = 4096;
    private static final int KD_BRIDGE_PORT = 39100;
    private static final long WINDOWS_TARGET_SIZE = 68719476736L;
@@ -132,7 +120,7 @@ public final class MainActivity extends Activity {
    private static final String V12_RECOVERY_PATCH_SHA256 = "9C109F3EB95D1B6F27929D970152725E0F2328A25FC3C847D8ED1603D86EDC55";
    private static final String IMAGE_PATCH_STAGING_NAME = "winavf-image-patch.bin";
    private static final String IMAGE_PATCH_ACTIVE_NAME = "active-image-patch.bin";
-   private static final String GENERIC_UBUNTU_VM_NAME = "winavf-generic-ubuntu-24045";
+   private static final String GENERIC_UBUNTU_VM_NAME = UbuntuVmConfig.GENERIC_VM;
    private static final String GENERIC_UBUNTU_ISO_NAME = "ubuntu-24.04.5-desktop-arm64.iso";
    private static final long GENERIC_UBUNTU_ISO_SIZE = 3967463424L;
    private static final String GENERIC_UBUNTU_ISO_SHA256 = "2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14";
@@ -203,9 +191,11 @@ public final class MainActivity extends Activity {
    private final VmLifecycle lifecycle = new VmLifecycle();
    private final RuntimeTransition transition = new RuntimeTransition();
    private RuntimeTransitionView transitionView;
-   private final DiagnosticJournal journal = new DiagnosticJournal(UiLanguage::english);
-   private int journalGeneration=-1;
-   private final java.util.Set<String> journalSeen=new java.util.HashSet<>();
+   private RuntimeDiagnostics diagnostics;
+   private UbuntuWorkspaceStorage ubuntuStorage;
+   private GuestMediaFiles guestMediaFiles;
+   private ConsoleLoopbackProbe consoleLoopback;
+   private WindowsBootProbes windowsBootProbes;
    private final Runnable transitionTick = new Runnable() {
       public void run() {
          if (activityDestroyed) return;
@@ -223,16 +213,13 @@ public final class MainActivity extends Activity {
    private volatile String guestControlStatus = "Unavailable / not connected";
    private volatile boolean rebootRequested;
    private volatile boolean activityDestroyed;
-   private volatile Object activeAudioBridgeVm;
+   private final UbuntuAudioBridge ubuntuAudio = new UbuntuAudioBridge();
    private volatile Object encodedDisplayVm;
    private EncodedDisplayProbe encodedDisplayProbe;
    private int encodedProbeGeneration;
    private FrameLayout page;
    private FrameLayout homePanel;
-   private FrameLayout tabsHost;
-   private FigmaMainTabs.Pager tabsPages;
-   private FigmaMainTabs.Navigation tabsNavigation;
-   private int tabsLanguage=-1;
+   private final ProductTabs productTabs = new ProductTabs();
    private LinearLayout toolbar;
    private GuestIme guestIme;
    private FigmaWorkspaceSettings workspaceSettingsView;
@@ -266,13 +253,11 @@ public final class MainActivity extends Activity {
    private static final int REQUEST_DIAGNOSTIC_EXPORT = 21826;
    private static final int REQUEST_WINDOWS_INSTALL_ISO = 21827;
    private static final int REQUEST_WINDOWS_WINPE = 21828;
-   private record WindowsSetupProgress(WindowsSetupDisk.Phase phase, String error) {}
-   private static volatile WindowsSetupProgress windowsSetupProgress = new WindowsSetupProgress(null, "");
+   private WindowsSetupFlow windowsSetup;
    private ProductScreen productScreen;
    private final ProductNavigation navigation = new ProductNavigation();
    private boolean returningBack;
    private boolean compatibilityRunning;
-   private static final int COMPATIBILITY_SCHEMA=3;
    private final String[] readinessResults=new String[FigmaCompatibilityView.CHECKS.length];
    { Arrays.fill(this.readinessResults,"Not checked"); }
    private AvfCompatibilityProbe.Status compatibilityStatus=AvfCompatibilityProbe.Status.INSUFFICIENT_DATA;
@@ -286,9 +271,7 @@ public final class MainActivity extends Activity {
    private String workspaceSettingsTab;
    private int workspaceSettingsPreviousTab=-1;
    private boolean wizardSettingsActive;
-   private long edgeHoldStarted;
-   private float edgeHoldX,edgeHoldY;
-   private boolean edgeGestureTracking;
+   private final SessionEdgeGesture edgeGesture = new SessionEdgeGesture();
    private int guestFrameWidth;
    private int guestFrameHeight;
    private String currentNotice;
@@ -304,143 +287,150 @@ public final class MainActivity extends Activity {
       this.currentNotice = "";
    }
 
-   public void onCreate(Bundle var1) {
-      super.onCreate(var1);
-      UiLanguage.load(this);
-      // Android 13+ can dispatch navigation Back without dispatchKeyEvent or
-      // onBackPressed. Keep both paths under the same VM-preserving policy.
-      this.getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-         OnBackInvokedDispatcher.PRIORITY_DEFAULT, this.navigationBackCallback);
-      this.getWindow().setDecorFitsSystemWindows(false);
-      this.hideSystemBars();
-      this.page = new FrameLayout(this);
-      this.page.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob) -> {
-         this.fitEncodedSurface();
-         this.fitMavkSurface();
-      });
-      this.page.setBackgroundColor(-16777216);
-      this.uiHandler = new Handler(this.getMainLooper());
-      this.frameSurface = new FrameSurfaceView(this);
-      this.frameSurface.setInputListener(new FrameSurfaceView.InputListener() {
-         public void onPointer(int var1, int var2, int var3) {
-            MainActivity.this.revealRunningControls();
-            MainActivity.this.onGuestPointer(var1, var2, var3);
-         }
-
-         public void onMouseButton(int var1, boolean var2) {
-            MainActivity.this.revealRunningControls();
-            MainActivity.this.displayConnection.send(GuestInput.BUTTON, var2 ? 1 : 0, var1, 0);
-         }
-
-         public void onScroll(int var1, int var2) {
-            MainActivity.this.revealRunningControls();
-            MainActivity.this.displayConnection.send(GuestInput.SCROLL, 0, var1, var2);
-         }
-
-         public void onRelativePointer(int var1, int var2) {
-            MainActivity.this.onGuestRelativePointer(var1, var2);
-         }
-
-         public void onPointerCaptureChanged(boolean var1) {
-            MainActivity.this.show(var1 ? "Mouse captured. Press Ctrl + Alt + Shift + Esc to open controls and release it." : "Mouse released.");
-            if (MainActivity.this.toolbar != null && MainActivity.this.toolbar.getVisibility() == 0) {
-               MainActivity.this.populateSessionDrawer();
-            }
-
-         }
-      });
-      FrameLayout.LayoutParams var2 = new FrameLayout.LayoutParams(-1, -1);
-      this.page.addView(this.frameSurface, var2);
-      this.status = new TextView(this);
-      this.status.setText("Ready");
-      this.status.setTextColor(-3355444);
-      this.status.setTextSize(12.0F);
-      this.status.setSingleLine(true);
-      this.status.setEllipsize(TruncateAt.END);
-      this.status.setPadding(16, 8, 16, 8);
-      this.status.setBackgroundColor(-1728053248);
-      FrameLayout.LayoutParams var3 = new FrameLayout.LayoutParams(-1, -2, 80);
-      this.page.addView(this.status, var3);
+   @Override public void onCreate(Bundle savedState) {
+      super.onCreate(savedState);
+      this.initializeControllers();
+      this.initializeWindow();
+      this.initializeViewport();
       this.addProductControls();
-      this.frameDecoder = new ConsoleFrameDecoder(new ConsoleFrameDecoder.Listener() {
-         public void onFrame(ConsoleFrameDecoder.Frame var1) {
-            ++MainActivity.this.observedFrameCount;
-            MainActivity.this.guestFrameWidth = var1.width;
-            MainActivity.this.guestFrameHeight = var1.height;
-            // Firmware UART frames are not proof that a Linux desktop exists.
-            if(MainActivity.this.selectedProfile==LaunchProfile.LINUX && MainActivity.this.transition.visible()) return;
-            MainActivity.this.queueFrameForDisplay(var1);
-         }
-
-         public void onProtocolError(String var1) {
-         }
-      });
+      this.initializeFrameDecoder();
       this.setContentView(this.page);
       this.page.setFocusableInTouchMode(true);
       this.page.requestFocus();
       this.handleIntentActions(this.getIntent());
-      this.restoreProductNavigation(var1);
+      this.restoreProductNavigation(savedState);
       this.reconnectRunningFrameVmIfPresent();
+   }
+
+   private void initializeControllers() {
+      this.diagnostics = new RuntimeDiagnostics(this.getPreferences(0));
+      this.guestMediaFiles = new GuestMediaFiles(this.getAssets());
+      this.consoleLoopback = new ConsoleLoopbackProbe(this, this.guestMediaFiles, this::show);
+      this.windowsBootProbes = new WindowsBootProbes(this.getExternalFilesDir(null), this::show);
+      this.ubuntuStorage = new UbuntuWorkspaceStorage(this, this.getPreferences(0), this.lifecycle,
+            () -> this.isManagedVmRunning() || this.activeFrameVmName != null);
+      this.windowsSetup = new WindowsSetupFlow(this,
+            () -> !this.activityDestroyed && this.productScreen == ProductScreen.WINDOWS_HOME,
+            this::isManagedVmRunning,
+            () -> this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME),
+            document -> this.openInstallDocumentPicker(
+                  document == WindowsWorkspaceMedia.Document.ISO ? REQUEST_WINDOWS_INSTALL_ISO : REQUEST_WINDOWS_WINPE, true),
+            this::startPreparedWindowsSetup);
+      this.uiHandler = new Handler(this.getMainLooper());
+      this.windowsSession = new WindowsSetupSession(this.uiHandler, this.windowsSessionView());
+   }
+
+   private void initializeWindow() {
+      UiLanguage.load(this);
+      // Android's gesture navigation and the Back key share the same VM-preserving route.
+      this.getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT, this.navigationBackCallback);
+      this.getWindow().setDecorFitsSystemWindows(false);
+      this.hideSystemBars();
+   }
+
+   private void initializeViewport() {
+      this.page = new FrameLayout(this);
+      this.page.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+         this.fitEncodedSurface();
+         this.fitMavkSurface();
+      });
+      this.page.setBackgroundColor(0xff000000);
+      this.frameSurface = new FrameSurfaceView(this);
+      this.frameSurface.setInputListener(this.createViewportInput());
+      this.page.addView(this.frameSurface, new FrameLayout.LayoutParams(-1, -1));
+      this.status = this.createViewportStatus();
+      this.page.addView(this.status, new FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM));
+   }
+
+   private TextView createViewportStatus() {
+      TextView statusView = new TextView(this);
+      statusView.setText("Ready");
+      statusView.setTextColor(0xffcccccc);
+      statusView.setTextSize(12.0f);
+      statusView.setSingleLine(true);
+      statusView.setEllipsize(TruncateAt.END);
+      statusView.setPadding(16, 8, 16, 8);
+      statusView.setBackgroundColor(0x99000000);
+      return statusView;
+   }
+
+   private FrameSurfaceView.InputListener createViewportInput() {
+      return new FrameSurfaceView.InputListener() {
+         @Override public void onPointer(int x, int y, int action) {
+            revealRunningControls();
+            onGuestPointer(x, y, action);
+         }
+
+         @Override public void onMouseButton(int button, boolean pressed) {
+            revealRunningControls();
+            displayConnection.send(GuestInput.BUTTON, pressed ? 1 : 0, button, 0);
+         }
+
+         @Override public void onScroll(int horizontal, int vertical) {
+            revealRunningControls();
+            displayConnection.send(GuestInput.SCROLL, 0, horizontal, vertical);
+         }
+
+         @Override public void onRelativePointer(int dx, int dy) {
+            onGuestRelativePointer(dx, dy);
+         }
+
+         @Override public void onPointerCaptureChanged(boolean captured) {
+            show(captured ? "Mouse captured. Press Ctrl + Alt + Shift + Esc to open controls and release it."
+                  : "Mouse released.");
+            if (toolbar != null && toolbar.getVisibility() == View.VISIBLE) populateSessionDrawer();
+         }
+      };
+   }
+
+   private void initializeFrameDecoder() {
+      this.frameDecoder = new ConsoleFrameDecoder(new ConsoleFrameDecoder.Listener() {
+         @Override public void onFrame(ConsoleFrameDecoder.Frame frame) {
+            observedFrameCount++;
+            guestFrameWidth = frame.width;
+            guestFrameHeight = frame.height;
+            // Firmware UART frames are not proof that a Linux desktop exists.
+            if (selectedProfile == LaunchProfile.LINUX && transition.visible()) return;
+            queueFrameForDisplay(frame);
+         }
+
+         @Override public void onProtocolError(String message) {}
+      });
    }
 
    @Override protected void onSaveInstanceState(Bundle out) {
       super.onSaveInstanceState(out);
-      if(this.homePanel.getVisibility()==View.VISIBLE)out.putString("product_screen",this.productScreen.name());
-      out.putString("workspace_tab",this.workspaceSettingsTab);
-      out.putBoolean("wizard_settings",this.wizardSettingsActive);
-      out.putString("create_workspace_os",this.createWorkspaceOs);
-      out.putString("draft_ubuntu_title",this.draftUbuntuTitle);
-      out.putBoolean("keyboard_capture_pending",this.awaitingKeyboardCapture);
-      java.util.ArrayList<Bundle> history=new java.util.ArrayList<>();
-      for(Location location:this.navigation.snapshot()) {
-         Bundle item=new Bundle();
-         if(location.screen()!=null)item.putString("screen",location.screen().name());
-         item.putString("tab",location.settingsTab());
-         item.putBoolean("wizard",location.wizard());
-         item.putBoolean("drawer",location.drawer());
-         history.add(item);
-      }
-      out.putParcelableArrayList("product_history",history);
+      ProductScreen visibleScreen = this.homePanel.getVisibility() == View.VISIBLE ? this.productScreen : null;
+      var state = new ProductNavigationState(visibleScreen, this.workspaceSettingsTab, this.wizardSettingsActive,
+            this.createWorkspaceOs, this.draftUbuntuTitle, this.awaitingKeyboardCapture, this.navigation.snapshot());
+      state.save(out);
    }
 
-   private void restoreProductNavigation(Bundle state) {
-      if(state==null || !state.containsKey("product_screen"))return;
-      this.workspaceSettingsTab=state.getString("workspace_tab","Performance");
-      this.wizardSettingsActive=state.getBoolean("wizard_settings");
-      this.createWorkspaceOs=state.getString("create_workspace_os","ubuntu");
-      this.draftUbuntuTitle=state.getString("draft_ubuntu_title","");
-      this.awaitingKeyboardCapture=state.getBoolean("keyboard_capture_pending");
-      java.util.ArrayList<Bundle> history=state.getParcelableArrayList("product_history",Bundle.class);
-      java.util.ArrayList<Location> locations=new java.util.ArrayList<>();
-      if(history!=null)for(Bundle item:history) {
-         String screen=item.getString("screen");
-         locations.add(new Location(screen==null?null:ProductScreen.valueOf(screen),
-               item.getString("tab","Performance"),item.getBoolean("wizard"),item.getBoolean("drawer")));
-      }
-      this.navigation.restore(locations);
-      this.returningBack=true;
-      try {this.renderProductScreen(ProductScreen.valueOf(state.getString("product_screen")));}
-      finally {this.returningBack=false;}
+   private void restoreProductNavigation(Bundle savedState) {
+      var state = ProductNavigationState.restore(savedState);
+      if (state == null) return;
+      this.workspaceSettingsTab = state.tab();
+      this.wizardSettingsActive = state.wizard();
+      this.createWorkspaceOs = state.draftOs();
+      this.draftUbuntuTitle = state.draftTitle();
+      this.awaitingKeyboardCapture = state.keyboardCapturePending();
+      this.navigation.restore(state.history());
+      this.renderBackDestination(state.screen());
    }
 
    private void hideSystemBars() {
-      WindowInsetsController var1 = this.getWindow().getDecorView().getWindowInsetsController();
-      if (var1 != null) {
-         var1.hide(Type.statusBars() | Type.navigationBars());
-         var1.setSystemBarsBehavior(2);
-      }
-
+      WindowInsetsController insets = this.getWindow().getDecorView().getWindowInsetsController();
+      if (insets == null) return;
+      insets.hide(Type.statusBars() | Type.navigationBars());
+      insets.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
    }
 
-   public void onWindowFocusChanged(boolean var1) {
-      super.onWindowFocusChanged(var1);
-      if (this.guestClipboard != null) this.guestClipboard.focus(var1);
-      if (var1) {
-         this.hideSystemBars();
-      } else {
-         this.guestInput.captureEnded();
-      }
-
+   @Override public void onWindowFocusChanged(boolean focused) {
+      super.onWindowFocusChanged(focused);
+      if (this.guestClipboard != null) this.guestClipboard.focus(focused);
+      if (focused) this.hideSystemBars();
+      else this.guestInput.captureEnded();
    }
 
    @Override protected void onResume() {
@@ -541,6 +531,7 @@ public final class MainActivity extends Activity {
    @Override protected void onDestroy() {
       this.getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(this.navigationBackCallback);
       this.activityDestroyed = true;
+      if (this.windowsSession != null) this.windowsSession.close();
       this.detachUbuntuConsole();
       this.dismissEncodedFallback();
       if(this.mavkDisplay!=null){this.mavkDisplay.close();this.mavkDisplay=null;}
@@ -581,33 +572,24 @@ public final class MainActivity extends Activity {
    }
 
    private void updateRuntimeEdgeExclusion() {
-      if(VERSION.SDK_INT<29 || this.page==null)return;
-      if(this.frameVisible && this.homePanel.getVisibility()!=View.VISIBLE && this.getPreferences(0).getBoolean("runtime_edge_gesture",false)) {
-         int middle=this.page.getHeight()/2;
-         int right=this.page.getWidth();
-         this.page.setSystemGestureExclusionRects(java.util.Collections.singletonList(new android.graphics.Rect(Math.max(0,right-this.dp(24)),Math.max(0,middle-this.dp(100)),right,Math.min(this.page.getHeight(),middle+this.dp(100)))));
-      } else this.page.setSystemGestureExclusionRects(java.util.Collections.emptyList());
+      if (VERSION.SDK_INT < 29 || this.page == null) return;
+      this.edgeGesture.updateExclusion(this.page, this.desktopHasFocus() && this.edgeGestureEnabled());
+   }
+
+   private boolean edgeGestureEnabled() {
+      return this.getPreferences(0).getBoolean("runtime_edge_gesture", false);
    }
 
    @Override public boolean dispatchTouchEvent(MotionEvent event) {
-      if(event.getActionMasked()==MotionEvent.ACTION_DOWN) {
-         this.edgeGestureTracking=this.frameVisible && this.homePanel.getVisibility()!=View.VISIBLE &&
-            (this.toolbar==null || this.toolbar.getVisibility()!=View.VISIBLE) &&
-            this.getPreferences(0).getBoolean("runtime_edge_gesture",false) &&
-            !event.isFromSource(InputDevice.SOURCE_MOUSE) && event.getX()>=this.page.getWidth()-this.dp(24) &&
-            Math.abs(event.getY()-this.page.getHeight()/2f)<=this.dp(100);
-         if(this.edgeGestureTracking) {this.edgeHoldStarted=event.getEventTime();this.edgeHoldX=event.getX();this.edgeHoldY=event.getY();}
-      }
-      if(this.edgeGestureTracking) {
-         if(event.getActionMasked()==MotionEvent.ACTION_MOVE && this.edgeHoldStarted!=Long.MAX_VALUE && event.getEventTime()-this.edgeHoldStarted>=500 &&
-            this.edgeHoldX-event.getX()>=this.dp(72) && Math.abs(event.getY()-this.edgeHoldY)<this.dp(80)) {
-            this.edgeHoldStarted=Long.MAX_VALUE;
-            this.guestInput.releaseKeys();this.openSessionDrawer();
-         }
-         if(event.getActionMasked()==MotionEvent.ACTION_UP || event.getActionMasked()==MotionEvent.ACTION_CANCEL) this.edgeGestureTracking=false;
-         return true;
-      }
+      boolean canStart = event.getActionMasked() == MotionEvent.ACTION_DOWN && this.desktopHasFocus()
+            && (this.toolbar == null || this.toolbar.getVisibility() != View.VISIBLE) && this.edgeGestureEnabled();
+      if (this.edgeGesture.onTouch(event, this.page, canStart, this::openDrawerFromEdge)) return true;
       return super.dispatchTouchEvent(event);
+   }
+
+   private void openDrawerFromEdge() {
+      this.guestInput.releaseKeys();
+      this.openSessionDrawer();
    }
 
    private void queueFrameForDisplay(ConsoleFrameDecoder.Frame var1) {
@@ -668,9 +650,7 @@ public final class MainActivity extends Activity {
       Location previous=this.navigation.back(this.frameVisible);
       if(previous==null) {
          if(mainTab(this.productScreen)>0 && this.homePanel.getVisibility()==View.VISIBLE) {
-            this.returningBack=true;
-            try {this.renderProductScreen(ProductScreen.MODE_SELECTION);}
-            finally {this.returningBack=false;}
+            this.renderBackDestination(ProductScreen.MODE_SELECTION);
             return;
          }
          if(!this.isManagedVmRunning())this.finish();
@@ -683,9 +663,16 @@ public final class MainActivity extends Activity {
       }
       this.workspaceSettingsTab=previous.settingsTab();
       this.wizardSettingsActive=previous.wizard();
-      this.returningBack=true;
-      try { this.renderProductScreen(previous.screen()); }
-      finally { this.returningBack=false; }
+      this.renderBackDestination(previous.screen());
+   }
+
+   private void renderBackDestination(ProductScreen screen) {
+      this.returningBack = true;
+      try {
+         this.renderProductScreen(screen);
+      } finally {
+         this.returningBack = false;
+      }
    }
 
    private boolean isManagedVmRunning() {
@@ -903,11 +890,11 @@ public final class MainActivity extends Activity {
    private void returnToRunningVm() {
       WindowsSetupRuntime setup=VmRuntimeService.windowsSetup();
       if(setup!=null && setup.retryDisplay()) {
-         if(this.windowsSetupViewer==setup) {
+         if(this.windowsSession.viewing(setup)) {
             this.beginRuntimeTransition(RuntimeTransition.Mode.BOOT);
             this.startWindowsSetupDisplay(setup);
          }
-         else this.attachWindowsSetup(setup);
+         else this.windowsSession.attach(setup);
          return;
       }
       if (!this.frameVisible) {
@@ -925,10 +912,10 @@ public final class MainActivity extends Activity {
 
    private android.graphics.drawable.Drawable homeWallpaper;
 
-   private void renderProductScreen(ProductScreen var1) {
+   private void renderProductScreen(ProductScreen screen) {
       ProductScreen from=this.productScreen;
       boolean wasVisible=this.homePanel.getVisibility()==View.VISIBLE;
-      this.renderProductContent(var1);
+      this.renderProductContent(screen);
       boolean flatBackground=switch(this.productScreen) {
          case COMPATIBILITY,VM_PERMISSION,DIAGNOSTICS,DIAGNOSTIC_LOG,DIAGNOSTIC_RUNS,INSTALL_STATUS -> true;
          default -> false;
@@ -947,19 +934,19 @@ public final class MainActivity extends Activity {
       }
    }
 
-   private void renderProductContent(ProductScreen var1) {
+   private void renderProductContent(ProductScreen screen) {
       if(this.guestIme!=null)this.guestIme.dismiss();
       if (!this.returningBack) {
-         this.navigation.opening(var1,
+         this.navigation.opening(screen,
                new Location(this.productScreen, this.workspaceSettingsTab,
                      this.wizardSettingsActive, this.toolbar.getVisibility()==View.VISIBLE),
                this.homePanel.getVisibility()==View.VISIBLE, this.homePanel.getChildCount()>0,
                this.frameVisible && !this.transition.visible());
       }
-      switch (var1) {
-         case DIAGNOSTICS, DIAGNOSTIC_LOG, DIAGNOSTIC_RUNS -> this.showDiagnosticsScreen(var1);
-         case MODE_SELECTION, SYSTEMS, APP_SETTINGS -> this.showMainTabs(var1);
-         case ONBOARDING, COMPATIBILITY -> this.showFigmaOnboarding(var1);
+      switch (screen) {
+         case DIAGNOSTICS, DIAGNOSTIC_LOG, DIAGNOSTIC_RUNS -> this.showDiagnosticsScreen(screen);
+         case MODE_SELECTION, SYSTEMS, APP_SETTINGS -> this.showMainTabs(screen);
+         case ONBOARDING, COMPATIBILITY -> this.showFigmaOnboarding(screen);
          case VM_PERMISSION -> this.showFigmaAvfPermission();
          case INSTALL_STATUS -> this.showFigmaSetupStatus();
          case INSTALL_RECOVERY -> this.showFigmaRecovery();
@@ -970,7 +957,7 @@ public final class MainActivity extends Activity {
             this.showFigmaWorkspaceSettings();
          }
          case LINUX_HOME, WINDOWS_HOME, CREATE_OS, CREATE_IMAGE, LINUX_SETUP, CREATE_STORAGE, CREATE_REVIEW ->
-               this.showFigmaWorkspaceScreen(var1);
+               this.showFigmaWorkspaceScreen(screen);
       }
    }
 
@@ -984,29 +971,13 @@ public final class MainActivity extends Activity {
    }
 
    private void showMainTabs(ProductScreen screen) {
-      int previous=mainTab(this.productScreen);
-      int selected=mainTab(screen);
-      boolean sameHost=this.tabsHost!=null && this.tabsHost.getParent()==this.homePanel
-            && this.tabsLanguage==UiLanguage.selected();
+      int previous = mainTab(this.productScreen);
       this.enterProductScreen(screen, false);
-      if(!sameHost) {
-         this.homePanel.removeAllViews();
-         this.tabsHost=new FrameLayout(this);
-         java.util.function.IntConsumer select=index->this.renderProductScreen(
-               index==FigmaMainTabs.HOME?ProductScreen.MODE_SELECTION:
-               index==FigmaMainTabs.SYSTEMS?ProductScreen.SYSTEMS:ProductScreen.APP_SETTINGS);
-         this.tabsNavigation=new FigmaMainTabs.Navigation(this,selected,select);
-         this.tabsPages=new FigmaMainTabs.Pager(this,selected,this.tabsNavigation,select);
-         this.tabsHost.addView(this.tabsPages,new FrameLayout.LayoutParams(-1,-1));
-         this.tabsHost.addView(this.tabsNavigation,new FrameLayout.LayoutParams(-1,-1));
-         this.homePanel.addView(this.tabsHost,new FrameLayout.LayoutParams(-1,-1));
-         this.tabsLanguage=UiLanguage.selected();
-      } else if(previous!=selected && this.tabsPages.page(selected)!=null) {
-         this.productStatus=this.tabsPages.page(selected).notice;
-         this.tabsNavigation.select(selected);
-         this.tabsPages.show(selected,true);
-         return;
-      }
+      this.productStatus = this.productTabs.show(this.homePanel, previous, mainTab(screen),
+            this::renderProductScreen, this::mainPageFactory);
+   }
+
+   private java.util.function.IntFunction<FigmaMainTabs> mainPageFactory() {
       android.content.SharedPreferences prefs=this.getPreferences(0);
       File disk=this.persistentUbuntuDiskFile();
       boolean exists=disk.isFile();
@@ -1061,19 +1032,18 @@ public final class MainActivity extends Activity {
       boolean hasIso=this.isoPresent();
       String storage=exists?(hasIso?UiLanguage.text("1 образ")+" · ":"")+diskSize:hasIso?"1 проверенный образ":"Хранилище пусто";
       FigmaMainTabs.Workspace windowsWorkspace=null;
-      if(windowsRunning || this.windowsSetupDiskReady()) {
+      if(windowsRunning || this.windowsSetup.diskReady()) {
          String status=windowsRunning?"Работает":"Диск Windows сохранён";
          windowsWorkspace=new FigmaMainTabs.Workspace(this.workspaceTitle(true),
                "Windows ARM64 · "+UiLanguage.text(status),status,"—","—","—",
                this.lastDesktopSession(prefs,"windows"),true,windows);
       }
-      for(int tab=0;tab<3;tab++) {
-         if(sameHost && tab!=selected)continue;
-         FigmaMainTabs tabs=new FigmaMainTabs(this,tab,!ready&&!ubuntuRunning,exists&&!ready,
+      FigmaMainTabs.Workspace windowsCard = windowsWorkspace;
+      return tab -> new FigmaMainTabs(this,tab,!ready&&!ubuntuRunning,exists&&!ready,
             new FigmaMainTabs.Workspace(this.workspaceTitle(false),"Ubuntu 24.04 · "+UiLanguage.text(ubuntuStatus),ubuntuStatus,
                   UiLanguage.format("%d ГБ",this.workspaceConfig().ramGiB),diskSize,this.configuredDisplayLabel(),
                   this.lastDesktopSession(prefs,"ubuntu"),false,ubuntu),
-            windowsWorkspace,
+            windowsCard,
             storage,launchLabel,launch,create,createUbuntu,windows,resources,this::openUbuntuStorage,this::showUbuntuLiveSession,
             ()->this.renderProductScreen(ProductScreen.DIAGNOSTICS),
             !prefs.getBoolean("skip_disk_validation",false),()->{
@@ -1086,11 +1056,6 @@ public final class MainActivity extends Activity {
                UiLanguage.select(this,index);
                this.showMainTabs(ProductScreen.APP_SETTINGS);
             });
-         this.tabsPages.page(tab,tabs);
-      }
-      this.productStatus=this.tabsPages.page(selected).notice;
-      this.tabsNavigation.select(selected);
-      this.tabsPages.show(selected,false);
    }
 
    private static int mainTab(ProductScreen screen) {
@@ -1150,104 +1115,147 @@ public final class MainActivity extends Activity {
 
    private void showFigmaWorkspaceScreen(ProductScreen screen) {
       this.enterProductScreen(screen, true);
-      FigmaCanvas canvas;
-      if(screen==ProductScreen.LINUX_HOME || screen==ProductScreen.WINDOWS_HOME) {
-         this.wizardSettingsActive=false;
-         boolean windows=screen==ProductScreen.WINDOWS_HOME;
-         File disk=this.persistentUbuntuDiskFile();boolean exists=disk.isFile();
-         boolean ready=exists && this.getPreferences(0).getBoolean("ubuntu_installed_runtime_ready",false);
-         boolean running=this.isManagedVmRunning() && (this.selectedProfile==LaunchProfile.WINDOWS)==windows
-               && (windows || !this.getPreferences(0).getBoolean("linux_current_boot_temporary",false));
-         boolean windowsIso=windows && WindowsInstallIso.available();
-         boolean windowsSetup=windowsIso && WindowsSetupDisk.available();
-         WindowsSetupProgress progress=windowsSetupProgress;
-         boolean windowsDiskReady=windowsSetup && this.windowsSetupDiskReady();
-         boolean windowsIsoSelected=windowsIso && this.windowsMedia().selected(WindowsWorkspaceMedia.Document.ISO)!=null;
-         boolean hasWindowsDisk=windows && java.nio.file.Files.exists(WindowsSetupDisk.workspace(this),
-               java.nio.file.LinkOption.NOFOLLOW_LINKS);
-         boolean canChooseWindowsMedia=windowsIso && !hasWindowsDisk && progress.phase()==null && !this.isManagedVmRunning();
-         boolean chooseWindowsIso=canChooseWindowsMedia && !windowsIsoSelected;
-         String state=running?"Работает":windows?(windowsSetup?windowsSetupLabel(progress,windowsDiskReady):
-               windowsIsoSelected?"ISO проверен · Experimental":"Экспериментальный запуск Windows"):ready?"Выключена":"Требуется настройка";
-         String resources=windows?"Фиксированный профиль":
-               UiLanguage.format("%d ГБ",this.workspaceConfig().ramGiB)+" · "+(exists?formatBytes(disk.length()):"—");
-         FigmaWorkspaceHome.WindowsDetails windowsDetails=windows?new FigmaWorkspaceHome.WindowsDetails(
-               windowsDiskReady?formatBytes(WindowsSetupDisk.TARGET_BYTES):
-               hasWindowsDisk?"Настройка не завершена":"Диск ещё не создан",
-               windowsIsoSelected?"Образ доступен":"Не выбран",canChooseWindowsMedia?()->{
-                  if(this.isManagedVmRunning())return;
-                  if(windowsSetup)this.openWindowsSetup();
-                  else this.openWindowsIsoPicker();
-               }:null):null;
-         canvas=new FigmaWorkspaceHome(this,windows,this.workspaceTitle(windows),state,resources,
-               windows?"—":this.configuredDisplayLabel(),running?"Вернуться":chooseWindowsIso?"Выбрать ISO…":windowsSetup?(hasWindowsDisk?"Продолжить":"Установка"):windowsIso?"Проверить ISO":windows||ready?"Запустить":exists?"Продолжить":"Создать",() -> {
-                  if(running) {this.returnToRunningVm();return;}
-                  if(this.isManagedVmRunning()) {this.show("Сначала завершите текущий сеанс VM.");return;}
-                  this.selectProfile(windows?LaunchProfile.WINDOWS:LaunchProfile.LINUX);
-                  if(windows) {
-                     if(chooseWindowsIso)this.openWindowsIsoPicker();
-                     else if(windowsSetup)this.openWindowsSetup();
-                     else if(windowsIso)this.openWindowsIsoPicker();
-                     else this.launchSelectedProfile();
-                     return;
-                  }
-                  if(ready)new Thread(()->this.startPersistentUbuntu(Request.START_EXISTING),"U-AVF-persistent-ubuntu").start();
-                  else if(exists)new Thread(this::resumeInstalledUbuntuOrOfferRepair,"U-AVF-resume-installed-ubuntu").start();
-                  else this.renderProductScreen(this.isoPresent()?ProductScreen.CREATE_STORAGE:ProductScreen.CREATE_OS);
-               },this::navigateBack,()->this.showWorkspaceActions(windows),
-               tab->this.openSessionPreferences(FigmaWorkspaceSettings.TABS[tab]),windowsDetails);
-         if(windowsSetup && progress.phase()!=null) {
-            canvas.widget(new FigmaProgress(this),112,1370,1312,12);
-            this.refreshWindowsSetupWhileActive(canvas,progress);
-         }
-      } else if(screen==ProductScreen.CREATE_STORAGE || screen==ProductScreen.CREATE_REVIEW) {
-         this.wizardSettingsActive=false;
-         boolean review=screen==ProductScreen.CREATE_REVIEW;File disk=this.persistentUbuntuDiskFile();WorkspaceConfig config=this.workspaceConfig();
-         boolean ready=disk.isFile() && this.getPreferences(0).getBoolean("ubuntu_installed_runtime_ready",false);
-         canvas=new FigmaStorageReview(this,review,disk.isFile()?formatBytes(disk.length()):formatBytes(PersistentUbuntuDisk.expectedDiskBytes(3967463424L,this.newWorkspaceRootBytes())),config.oneCpu?"1 vCPU":"Match-host vCPU",config.ramGiB,this.isoPresent(),this.configuredDisplayLabel(),
-               disk.isFile()?ready?"Open existing workspace":"Continue existing setup":"Create & install",()-> {
-                  if(!review) {this.renderProductScreen(ProductScreen.CREATE_REVIEW);return;}
-                  if(disk.isFile()) {
-                     if(ready)this.renderProductScreen(ProductScreen.LINUX_HOME);
-                     else if(this.isManagedVmRunning())this.returnToRunningVm();
-                     else new Thread(this::resumeInstalledUbuntuOrOfferRepair,"U-AVF-create-resume").start();
-                  } else this.confirmUbuntuInstallProfile(false);
-               },this::navigateBack,()-> {
-                  this.wizardSettingsActive=true;this.workspaceSettingsTab="Performance";this.renderProductScreen(ProductScreen.VM_SETTINGS);
-               },this.workspaceRootSizeLabel(),disk.isFile()?null:this::chooseNewWorkspaceRootSize);
-      } else if(screen==ProductScreen.CREATE_OS) {
-         boolean exists=this.persistentUbuntuDiskFile().isFile();
-         canvas=new FigmaCreateView(this,exists,this::navigateBack,()->{
-            this.createWorkspaceOs="ubuntu";
-            this.renderProductScreen(exists?ProductScreen.LINUX_HOME:ProductScreen.CREATE_IMAGE);
-         },()->{
-            if(this.isManagedVmRunning() && this.selectedProfile!=LaunchProfile.WINDOWS) {
-               this.show("Сначала завершите текущий сеанс VM.");
-               return;
-            }
-            this.selectProfile(LaunchProfile.WINDOWS);
-            this.renderProductScreen(ProductScreen.WINDOWS_HOME);
-         });
-      } else {
-         boolean hasDisk=this.persistentUbuntuDiskFile().isFile();
-         String name=hasDisk?this.workspaceTitle(false):
-               this.draftUbuntuTitle.isEmpty()?UiLanguage.text("Ubuntu · Новый"):this.draftUbuntuTitle;
-         String resources=UiLanguage.format("%d ГБ",this.workspaceConfig().ramGiB)+" · "+
-               (hasDisk?formatBytes(this.persistentUbuntuDiskFile().length()):this.workspaceRootSizeLabel());
-         canvas=new FigmaCreateView(this,name,resources,this.isoPresent(),hasDisk,this::navigateBack,
-               ()->ProductDialog.rename(this,name,next->{
-                  if(hasDisk)this.getPreferences(0).edit().putString("ubuntu_workspace_title",next).apply();
-                  else this.draftUbuntuTitle=next;
-                  this.showFigmaWorkspaceScreen(screen);
-               }),this::chooseUbuntuMedia,()->this.renderProductScreen(ProductScreen.CREATE_STORAGE),()->{
-                  if(hasDisk) {this.renderProductScreen(ProductScreen.LINUX_HOME);return;}
-                  if(this.isManagedVmRunning()) {this.show("Сначала завершите текущий сеанс VM.");return;}
-                  this.selectProfile(LaunchProfile.LINUX);
-                  this.confirmUbuntuInstallProfile(false);
-               });
+      FigmaCanvas canvas = switch (screen) {
+         case WINDOWS_HOME -> createWindowsWorkspace();
+         case LINUX_HOME -> createUbuntuWorkspace();
+         case CREATE_STORAGE, CREATE_REVIEW -> createStorageReview(screen == ProductScreen.CREATE_REVIEW);
+         case CREATE_OS -> createOsPicker();
+         default -> createUbuntuMediaScreen(screen);
+      };
+      this.productStatus = canvas.notice;
+      this.productStatus.setText("");
+      this.homePanel.addView(canvas, new FrameLayout.LayoutParams(-1, -1));
+   }
+
+   private FigmaCanvas createUbuntuWorkspace() {
+      this.wizardSettingsActive = false;
+      File disk = this.persistentUbuntuDiskFile();
+      boolean exists = disk.isFile();
+      var prefs = this.getPreferences(0);
+      boolean ready = exists && prefs.getBoolean(UbuntuWorkspaceMedia.INSTALLED_READY, false);
+      boolean running = this.ubuntuWorkspaceRunning();
+      String state = running ? "Работает" : ready ? "Выключена" : "Требуется настройка";
+      String resources = UiLanguage.format("%d ГБ", this.workspaceConfig().ramGiB)
+            + " · " + (exists ? formatBytes(disk.length()) : "—");
+      String action = running ? "Вернуться" : ready ? "Запустить" : exists ? "Продолжить" : "Создать";
+      return new FigmaWorkspaceHome(this, false, this.workspaceTitle(false), state, resources,
+            this.configuredDisplayLabel(), action, () -> this.openUbuntuWorkspace(running, exists, ready),
+            this::navigateBack, () -> this.showWorkspaceActions(false),
+            tab -> this.openSessionPreferences(FigmaWorkspaceSettings.TABS[tab]), null);
+   }
+
+   private boolean ubuntuWorkspaceRunning() {
+      return this.isManagedVmRunning() && this.selectedProfile != LaunchProfile.WINDOWS
+            && !this.getPreferences(0).getBoolean("linux_current_boot_temporary", false);
+   }
+
+   private void openUbuntuWorkspace(boolean running, boolean exists, boolean ready) {
+      if (running) {
+         this.returnToRunningVm();
+         return;
       }
-      this.productStatus=canvas.notice;this.productStatus.setText("");
-      this.homePanel.addView(canvas,new FrameLayout.LayoutParams(-1,-1));
+      if (this.isManagedVmRunning()) {
+         this.show("Сначала завершите текущий сеанс VM.");
+         return;
+      }
+      this.selectProfile(LaunchProfile.LINUX);
+      if (ready) new Thread(() -> this.startPersistentUbuntu(Request.START_EXISTING), "U-AVF-persistent-ubuntu").start();
+      else if (exists) new Thread(this::resumeInstalledUbuntuOrOfferRepair, "U-AVF-resume-installed-ubuntu").start();
+      else this.renderProductScreen(this.isoPresent() ? ProductScreen.CREATE_STORAGE : ProductScreen.CREATE_OS);
+   }
+
+   private FigmaCanvas createWindowsWorkspace() {
+      this.wizardSettingsActive = false;
+      boolean vmRunning = this.isManagedVmRunning();
+      boolean running = vmRunning && this.selectedProfile == LaunchProfile.WINDOWS;
+      var workspace = this.windowsSetup.workspace();
+      boolean chooseIso = workspace.canChooseMedia(vmRunning) && !workspace.isoSelected();
+      var details = new FigmaWorkspaceHome.WindowsDetails(workspace.diskLabel(),
+            workspace.isoSelected() ? "Образ доступен" : "Не выбран",
+            workspace.canChooseMedia(vmRunning) ? () -> this.chooseWindowsWorkspaceMedia(workspace.setupAvailable()) : null);
+      var canvas = new FigmaWorkspaceHome(this, true, this.workspaceTitle(true), running ? "Работает" : workspace.status(),
+            "Фиксированный профиль", "—", running ? "Вернуться" : workspace.action(chooseIso),
+            () -> this.openWindowsWorkspace(running, chooseIso, workspace),
+            this::navigateBack, () -> this.showWorkspaceActions(true),
+            tab -> this.openSessionPreferences(FigmaWorkspaceSettings.TABS[tab]), details);
+      if (workspace.setupAvailable() && workspace.progress().phase() != null) {
+         canvas.widget(new FigmaProgress(this), 112, 1370, 1312, 12);
+         this.refreshWindowsSetupWhileActive(canvas, workspace.progress());
+      }
+      return canvas;
+   }
+
+   private void chooseWindowsWorkspaceMedia(boolean setupAvailable) {
+      if (this.isManagedVmRunning()) return;
+      if (setupAvailable) this.windowsSetup.open();
+      else this.openWindowsIsoPicker();
+   }
+
+   private void openWindowsWorkspace(boolean running, boolean chooseIso, WindowsSetupFlow.Workspace workspace) {
+      if (running) {
+         this.returnToRunningVm();
+         return;
+      }
+      if (this.isManagedVmRunning()) {
+         this.show("Сначала завершите текущий сеанс VM.");
+         return;
+      }
+      this.selectProfile(LaunchProfile.WINDOWS);
+      if (chooseIso) this.openWindowsIsoPicker();
+      else if (workspace.setupAvailable()) this.windowsSetup.open();
+      else if (workspace.isoAvailable()) this.openWindowsIsoPicker();
+      else this.launchSelectedProfile();
+   }
+
+   private FigmaCanvas createStorageReview(boolean review) {
+      this.wizardSettingsActive=false;
+      File disk=this.persistentUbuntuDiskFile();WorkspaceConfig config=this.workspaceConfig();
+      boolean ready=disk.isFile() && this.getPreferences(0).getBoolean("ubuntu_installed_runtime_ready",false);
+      return new FigmaStorageReview(this,review,disk.isFile()?formatBytes(disk.length()):formatBytes(PersistentUbuntuDisk.expectedDiskBytes(3967463424L,this.ubuntuStorage.plannedRootBytes())),config.oneCpu?"1 vCPU":"Match-host vCPU",config.ramGiB,this.isoPresent(),this.configuredDisplayLabel(),
+            disk.isFile()?ready?"Open existing workspace":"Continue existing setup":"Create & install",()-> {
+               if(!review) {this.renderProductScreen(ProductScreen.CREATE_REVIEW);return;}
+               if(disk.isFile()) {
+                  if(ready)this.renderProductScreen(ProductScreen.LINUX_HOME);
+                  else if(this.isManagedVmRunning())this.returnToRunningVm();
+                  else new Thread(this::resumeInstalledUbuntuOrOfferRepair,"U-AVF-create-resume").start();
+               } else this.confirmUbuntuInstallProfile(false);
+            },this::navigateBack,()-> {
+               this.wizardSettingsActive=true;this.workspaceSettingsTab="Performance";this.renderProductScreen(ProductScreen.VM_SETTINGS);
+            },this.workspaceRootSizeLabel(),disk.isFile()?null:this::chooseNewWorkspaceRootSize);
+   }
+
+   private FigmaCanvas createOsPicker() {
+      boolean exists=this.persistentUbuntuDiskFile().isFile();
+      return new FigmaCreateView(this,exists,this::navigateBack,()->{
+         this.createWorkspaceOs="ubuntu";
+         this.renderProductScreen(exists?ProductScreen.LINUX_HOME:ProductScreen.CREATE_IMAGE);
+      },()->{
+         if(this.isManagedVmRunning() && this.selectedProfile!=LaunchProfile.WINDOWS) {
+            this.show("Сначала завершите текущий сеанс VM.");
+            return;
+         }
+         this.selectProfile(LaunchProfile.WINDOWS);
+         this.renderProductScreen(ProductScreen.WINDOWS_HOME);
+      });
+   }
+
+   private FigmaCanvas createUbuntuMediaScreen(ProductScreen screen) {
+      boolean hasDisk=this.persistentUbuntuDiskFile().isFile();
+      String name=hasDisk?this.workspaceTitle(false):
+            this.draftUbuntuTitle.isEmpty()?UiLanguage.text("Ubuntu · Новый"):this.draftUbuntuTitle;
+      String resources=UiLanguage.format("%d ГБ",this.workspaceConfig().ramGiB)+" · "+
+            (hasDisk?formatBytes(this.persistentUbuntuDiskFile().length()):this.workspaceRootSizeLabel());
+      return new FigmaCreateView(this,name,resources,this.isoPresent(),hasDisk,this::navigateBack,
+            ()->ProductDialog.rename(this,name,next->{
+               if(hasDisk)this.getPreferences(0).edit().putString("ubuntu_workspace_title",next).apply();
+               else this.draftUbuntuTitle=next;
+               this.showFigmaWorkspaceScreen(screen);
+            }),this::chooseUbuntuMedia,()->this.renderProductScreen(ProductScreen.CREATE_STORAGE),()->{
+               if(hasDisk) {this.renderProductScreen(ProductScreen.LINUX_HOME);return;}
+               if(this.isManagedVmRunning()) {this.show("Сначала завершите текущий сеанс VM.");return;}
+               this.selectProfile(LaunchProfile.LINUX);
+               this.confirmUbuntuInstallProfile(false);
+            });
    }
 
    private String workspaceTitle(boolean windows) {
@@ -1335,7 +1343,7 @@ public final class MainActivity extends Activity {
       }
       this.compatibilityRunning=true;this.compatibilityPassed=false;this.readinessCompleted=0;
       this.compatibilityStatus=AvfCompatibilityProbe.Status.INSUFFICIENT_DATA;
-      this.appendDiagnosticEvent("Проверка","Событие","Запущена проверка требований устройства");
+      this.diagnostics.append("Проверка","Событие","Запущена проверка требований устройства");
       Arrays.fill(this.readinessResults,"Waiting");
       this.renderProductScreen(ProductScreen.COMPATIBILITY);
       new Thread(()->this.checkDeviceReadiness(shareResult),"U-AVF-readiness-check").start();
@@ -1507,96 +1515,112 @@ public final class MainActivity extends Activity {
    }
 
    private File persistentUbuntuDiskFile() {
-      return new File(new File(this.getFilesDir(), "linux-persistent"), "uavf-ubuntu-persistent-one-disk.raw");
+      return this.ubuntuStorage.disk();
    }
 
    private volatile boolean storageExpanding;
-   private long newWorkspaceRootBytes() {
-      long bytes=this.getPreferences(0).getLong("new_workspace_root_bytes",PersistentUbuntuDisk.TARGET_BYTES);
-      return bytes>=PersistentUbuntuDisk.TARGET_BYTES && bytes<=1024L*1024*1024*1024 && bytes%(1024*1024)==0?bytes:PersistentUbuntuDisk.TARGET_BYTES;
-   }
 
    private String workspaceRootSizeLabel() {
       try {
-         File disk=this.persistentUbuntuDiskFile();
-         long bytes=disk.isFile()?PersistentUbuntuDisk.rootBytes(disk,3967463424L):this.newWorkspaceRootBytes();
-         return (bytes/(1024*1024*1024))+" GiB";
-      } catch(Exception error) {return "Unavailable — disk audit required";}
+         long bytes = this.persistentUbuntuDiskFile().isFile()
+               ? this.ubuntuStorage.installedRootBytes() : this.ubuntuStorage.plannedRootBytes();
+         return bytes / UbuntuWorkspaceStorage.GIB + " GiB";
+      } catch (Exception error) {
+         return "Unavailable — disk audit required";
+      }
    }
 
    private void chooseNewWorkspaceRootSize() {
-      if(this.persistentUbuntuDiskFile().isFile()) {this.show("Use Expand Ubuntu storage for an existing workspace.");return;}
-      String[] labels={"32 GiB","48 GiB","64 GiB","96 GiB","128 GiB","256 GiB"};
-      long[] sizes={32,48,64,96,128,256};
-      int selected=-1;
-      for(int i=0;i<sizes.length;i++)if(sizes[i]*1024*1024*1024==this.newWorkspaceRootBytes())selected=i;
-      ProductDialog.choose(this,"Ubuntu system storage","Choose space for Ubuntu. Boot files and the ISO use additional space.",labels,selected,index->{
-            long bytes=sizes[index]*1024*1024*1024;
-            if(this.getFilesDir().getUsableSpace()<PersistentUbuntuDisk.expectedDiskBytes(3967463424L,bytes)+2L*1024*1024*1024) {
-               this.show("Not enough Android storage for this size, ISO and 2 GiB reserve.");return;
-            }
-            this.getPreferences(0).edit().putLong("new_workspace_root_bytes",bytes).apply();
-            this.renderProductScreen(ProductScreen.CREATE_STORAGE);
-         });
+      if (this.persistentUbuntuDiskFile().isFile()) {
+         this.show("Use Expand Ubuntu storage for an existing workspace.");
+         return;
+      }
+      long[] sizes = {32, 48, 64, 96, 128, 256};
+      String[] labels = new String[sizes.length];
+      int selected = -1;
+      for (int index = 0; index < sizes.length; index++) {
+         labels[index] = sizes[index] + " GiB";
+         if (sizes[index] * UbuntuWorkspaceStorage.GIB == this.ubuntuStorage.plannedRootBytes()) selected = index;
+      }
+      ProductDialog.choose(this, "Ubuntu system storage",
+            "Choose space for Ubuntu. Boot files and the ISO use additional space.", labels, selected, index -> {
+               try {
+                  this.ubuntuStorage.planRoot(sizes[index] * UbuntuWorkspaceStorage.GIB);
+                  this.renderProductScreen(ProductScreen.CREATE_STORAGE);
+               } catch (IllegalStateException error) {
+                  this.show(error.getMessage());
+               }
+            });
    }
 
    private void showStorageExpansion() {
-      if(this.storageExpanding){this.show("Storage operation is already running.");return;}
-      if(this.vmMayBeRunning || this.isManagedVmRunning() || this.activeFrameVmName!=null) {
-         this.show("Stop Ubuntu before expanding storage.");return;
+      if (this.storageExpanding) {
+         this.show("Storage operation is already running.");
+         return;
       }
-      if(!this.getPreferences(0).getBoolean("ubuntu_installed_runtime_ready",false)) {
-         this.show("Finish Ubuntu installation first.");return;
+      String blocker = this.ubuntuStorage.expansionBlocker();
+      if (!blocker.isEmpty()) {
+         this.show(blocker);
+         return;
       }
-      if(this.getPreferences(0).getLong("ubuntu_growth_pending_bytes",0)>0) {
-         this.show("Start Ubuntu to finish the previous filesystem expansion first.");return;
+      if (!this.ubuntuStorage.guestCanExpand()) {
+         this.showProductNotice("Storage runtime update required",
+               "The installed guest has not confirmed automatic ext4 expansion support. Its disk will not be changed. A guest runtime update is required first.");
+         return;
       }
-      if(!this.getPreferences(0).getBoolean("ubuntu_growth_helper_verified",false)) {
-         this.showProductNotice("Storage runtime update required","The installed guest has not confirmed automatic ext4 expansion support. Its disk will not be changed. A guest runtime update is required first.");return;
-      }
-      this.storageExpanding=true;
-      new Thread(()->{
+      this.storageExpanding = true;
+      new Thread(() -> {
          try {
-            final long current=PersistentUbuntuDisk.rootBytes(this.persistentUbuntuDiskFile(),3967463424L);
-            final long free=this.getFilesDir().getUsableSpace();
-            this.runOnUiThread(()->{
-               this.storageExpanding=false;
-               String[] choices={"Add 8 GiB","Add 16 GiB","Add 32 GiB","Add 64 GiB"};
-               ProductDialog.choose(this,"Expand Ubuntu storage","Current Ubuntu storage: "+(current/(1024*1024*1024))+" GiB",choices,-1,index->{
-                     long add=(8L<<index)*1024*1024*1024;
-                     if(free<add+2L*1024*1024*1024){this.show("Not enough Android storage; keep at least 2 GiB free.");return;}
-                     ProductDialog.show(this,"Expand root to "+((current+add)/(1024*1024*1024))+" GiB?",
-                        "Ubuntu files, the boot partition and ISO are preserved. The partition grows now; Ubuntu expands ext4 on its next boot. Keep the tablet charged.",
-                        "Expand",false,()->this.expandUbuntuStorage(current+add));
-                  });
+            long current = this.ubuntuStorage.installedRootBytes();
+            long free = this.ubuntuStorage.freeBytes();
+            this.runOnUiThread(() -> {
+               this.storageExpanding = false;
+               this.chooseStorageExpansion(current, free);
             });
-         } catch(Exception error) {this.storageExpanding=false;this.show("Storage check failed: "+rootMessage(error));}
-      },"U-AVF-storage-check").start();
+         } catch (Exception error) {
+            this.storageExpanding = false;
+            this.show("Storage check failed: " + rootMessage(error));
+         }
+      }, "U-AVF-storage-check").start();
    }
 
-   private void showProductNotice(String title,String message) {
-      this.runOnUiThread(()->ProductDialog.notice(this,title,message));
+   private void chooseStorageExpansion(long current, long free) {
+      long gib = UbuntuWorkspaceStorage.GIB;
+      String[] choices = {"Add 8 GiB", "Add 16 GiB", "Add 32 GiB", "Add 64 GiB"};
+      ProductDialog.choose(this, "Expand Ubuntu storage", "Current Ubuntu storage: " + current / gib + " GiB",
+            choices, -1, index -> {
+               long add = (8L << index) * gib;
+               if (free < add + UbuntuWorkspaceStorage.RESERVE_BYTES) {
+                  this.show("Not enough Android storage; keep at least 2 GiB free.");
+                  return;
+               }
+               long total = current + add;
+               ProductDialog.show(this, "Expand root to " + total / gib + " GiB?",
+                     "Ubuntu files, the boot partition and ISO are preserved. The partition grows now; Ubuntu expands ext4 on its next boot. Keep the tablet charged.",
+                     "Expand", false, () -> this.expandUbuntuStorage(total));
+            });
+   }
+
+   private void showProductNotice(String title, String message) {
+      this.runOnUiThread(() -> ProductDialog.notice(this, title, message));
    }
 
    private void expandUbuntuStorage(long bytes) {
-      if(this.storageExpanding)return;
-      this.storageExpanding=true;
-      new Thread(()->{
+      if (this.storageExpanding) return;
+      this.storageExpanding = true;
+      new Thread(() -> {
          try {
-            if(!this.lifecycle.beginStorageMutation())throw new IllegalStateException("Stop VM before resizing");
-            try {
-               if(this.vmMayBeRunning || this.isManagedVmRunning() || this.activeFrameVmName!=null)throw new IllegalStateException("VM is still active");
-               File disk=this.persistentUbuntuDiskFile();
-               long current=PersistentUbuntuDisk.rootBytes(disk,3967463424L);
-               if(this.getFilesDir().getUsableSpace()<bytes-current+2L*1024*1024*1024)throw new IllegalStateException("Insufficient free space");
-               File journal=new File(disk.getParentFile(),"root-growth.intent");
-               PersistentUbuntuDisk.grow(disk,3967463424L,bytes,journal);
-               this.getPreferences(0).edit().putLong("ubuntu_growth_pending_bytes",bytes).apply();
-               this.runOnUiThread(()->{this.renderProductScreen(ProductScreen.VM_SETTINGS);this.show("Partition expanded. Start Ubuntu to finish ext4 expansion.");});
-            } finally {this.lifecycle.endStorageMutation();}
-         } catch(Exception error) {this.show("Storage expansion not completed: "+rootMessage(error));}
-         finally {this.storageExpanding=false;}
-      },"U-AVF-storage-expand").start();
+            this.ubuntuStorage.expand(bytes);
+            this.runOnUiThread(() -> {
+               this.renderProductScreen(ProductScreen.VM_SETTINGS);
+               this.show("Partition expanded. Start Ubuntu to finish ext4 expansion.");
+            });
+         } catch (Exception error) {
+            this.show("Storage expansion not completed: " + rootMessage(error));
+         } finally {
+            this.storageExpanding = false;
+         }
+      }, "U-AVF-storage-expand").start();
    }
 
    private void startPersistentUbuntu(Request request) {
@@ -1628,13 +1652,13 @@ public final class MainActivity extends Activity {
          var media = new UbuntuWorkspaceMedia(prefs, this.getFilesDir(), this.getExternalFilesDir(null),
                this.persistentUbuntuDiskFile(), new UbuntuWorkspaceMedia.Assets() {
             @Override public File verified(String asset, File target, long bytes, String sha) throws Exception {
-               return MainActivity.this.copyVerifiedAsset(asset, target, bytes, sha);
+               return MainActivity.this.guestMediaFiles.copyVerifiedAsset(asset, target, bytes, sha);
             }
             @Override public File copy(String asset, File target) throws Exception {
-               return MainActivity.this.copyAsset(asset, target, -1);
+               return MainActivity.this.guestMediaFiles.copyAsset(asset, target, -1);
             }
          });
-         long rootBytes = request == Request.CREATE ? this.newWorkspaceRootBytes() : 0;
+         long rootBytes = request == Request.CREATE ? this.ubuntuStorage.plannedRootBytes() : 0;
          var prepared = media.prepare(request, installer, installing, rootBytes);
          if (firstBoot && prepared.firstBootInstaller() != Installer.DEFAULT
                && !prefs.getBoolean(DisplaySettings.FIRST_BOOT_OVERRIDE, false)) {
@@ -1646,8 +1670,8 @@ public final class MainActivity extends Activity {
          boolean installed = !reinstall && (firstBoot || prefs.getBoolean(UbuntuWorkspaceMedia.INSTALLED_READY, false));
          boolean mavk = installed && this.displaySettings().mavkRequested() && MavkRuntimeAssets.isBundled(this);
          int refreshHz = this.requestedUbuntuRefreshHz();
-         Object config = this.buildGenericUbuntuConfig(prepared.kernel(), prepared.disk(), null, null,
-               false, AvfGuest.UBUNTU_VM, false, true, mavk, refreshHz);
+         Object config = this.buildWorkspaceUbuntuConfig(prepared.kernel(), prepared.disk(),
+               false, true, mavk, refreshHz);
          boolean handoff = reinstall || (!firstBoot && !prefs.getBoolean(UbuntuWorkspaceMedia.INSTALLED_READY, false));
          this.recordUbuntuDisplayBoot(installed, false, true, mavk, refreshHz);
          if (handoff) prefs.edit().putBoolean(UbuntuWorkspaceMedia.HANDOFF_PENDING, true)
@@ -1784,10 +1808,6 @@ public final class MainActivity extends Activity {
 
    }
 
-   private static String formatBytes(long var0) {
-      return String.format(Locale.ROOT, "%.0f GB", (double)var0 / (double)1.0737418E9F);
-   }
-
    private void showFigmaWorkspaceSettings() {
       this.enterProductScreen(ProductScreen.VM_SETTINGS, true);
       this.homePanel.bringToFront();
@@ -1801,103 +1821,121 @@ public final class MainActivity extends Activity {
       this.productStatus=view.notice;
       this.homePanel.addView(view,new FrameLayout.LayoutParams(-1,-1));
       if(windows)return;
-      android.content.SharedPreferences prefs=this.getPreferences(0);
-      WorkspaceConfig config=this.workspaceConfig();
-      Mode displayMode=this.configuredDisplayMode();
-      String onRestart=this.isManagedVmRunning()?"Изменение вступит в силу после перезапуска Ubuntu.":"Настройка применяется при запуске Ubuntu.";
-      switch(tab) {
-         case 0 -> {
-            int[] memory={2,3,4,6};
-            int selected=config.ramGiB==2?0:config.ramGiB==3?1:config.ramGiB==6?3:2;
-            view.card(476,612);
-            view.segments(520,"Память",new String[]{"2 ГБ","3 ГБ","4 ГБ","6 ГБ"},selected,index->{
-               if(this.isManagedVmRunning()) {ProductDialog.notice(this,"Память","Завершите Ubuntu перед изменением памяти.");return false;}
-               android.app.ActivityManager.MemoryInfo info=new android.app.ActivityManager.MemoryInfo();
-               this.getSystemService(android.app.ActivityManager.class).getMemoryInfo(info);
-               if(memory[index]*1073741824L > info.totalMem-3L*1073741824L) {
-                  ProductDialog.notice(this,"Память","Оставьте для Android не менее 3 ГБ.");return false;
-               }
-               prefs.edit().putInt("linux_ram_gib",memory[index]).apply();
-               return true;
-            });
-            view.segments(736,"Виртуальные процессоры",new String[]{"Все ядра","1 vCPU"},config.oneCpu?1:0,index->{
-               if(this.isManagedVmRunning()) {ProductDialog.notice(this,"Процессор","Завершите Ubuntu перед изменением процессора.");return false;}
-               prefs.edit().putBoolean("linux_one_cpu",index==1).apply();
-               return true;
-            });
-            view.option(952,"aea17","Графический вывод",DISPLAY_MODES[displayMode.ordinal()],
-                  ()->this.openWorkspaceSettingsTab("Display"));
-         }
-         case 1 -> {
-            boolean running=this.isManagedVmRunning();
-            boolean canResize=!running;
-            boolean showPlasma=running && !this.wizardSettingsActive
-                  && this.getPreferences(0).getBoolean("linux_current_boot_installed",false)
-                  && !"unavailable".equals(this.plasmaInstallState);
-            view.card(476,canResize?450:showPlasma?506:332);
-            String[] modes=MavkRuntimeAssets.isBundled(this)?DISPLAY_MODES:Arrays.copyOf(DISPLAY_MODES,2);
-            view.displaySelector(516,modes,displayMode.ordinal(),index->{
-               Mode requested = Mode.values()[index];
-               if(requested==this.configuredDisplayMode())return false;
-               if(this.isManagedVmRunning()) {
-                  ProductDialog.notice(this,"Графический вывод","Завершите Ubuntu перед сменой режима вывода.");
-                  return false;
-               }
-               this.saveDisplayMode(requested,true);
-               view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);
-               return true;
-            },()->{
-               if(view.getParent()==this.homePanel && this.productScreen==ProductScreen.VM_SETTINGS &&
-                     "Display".equals(this.workspaceSettingsTab))this.showFigmaWorkspaceSettings();
-            });
-            view.note(702,DISPLAY_DESCRIPTIONS[displayMode.ordinal()]);
-            if(canResize) {
-               String[] resolutionModes={"1280x800","1920x1080","1920x1200"};
-               int selected=java.util.Arrays.asList(resolutionModes).indexOf(this.displayConfig(displayMode).resolution());
-               view.choice(780,"aea17","Разрешение",new String[]{"1280 × 800","1920 × 1080","1920 × 1200"},selected,index->{
-                  if(this.isManagedVmRunning())return;
-                  this.displaySettings().setResolution(displayMode,resolutionModes[index]);
-                  this.showFigmaWorkspaceSettings();
-               });
-            } else view.note(756,"Завершите Ubuntu перед сменой режима вывода.");
-            if(showPlasma) {
-               String state=this.plasmaInstallState;
-               String label=switch(state) {
-                  case "installing" -> "Установка идёт…";
-                  case "ready" -> "Установлена";
-                  case "failed" -> "Повторить установку";
-                  default -> "Установить";
-               };
-               view.option(840,"aea17","KDE Plasma X11 · Mavk",label,
-                     "ready".equals(state)||"installing".equals(state)?null:this::requestPlasmaInstall);
-            }
-         }
-         case 2 -> {
-            view.card(476,704);
-            this.workspaceToggle(view,476,"1bf09","Общий буфер обмена","linux_text_clipboard_enabled",false,"");
-            this.workspaceToggle(view,604,"12205","Жест от правого края","runtime_edge_gesture",false,"");
-            this.workspaceToggle(view,732,"836de","Скрывать кнопку панели","hide_runtime_panel_button",false,"");
-            boolean f12=prefs.getInt("runtime_panel_shortcut",KeyEvent.KEYCODE_ESCAPE)==KeyEvent.KEYCODE_F12;
-            view.choice(860,"5312a","Открыть панель VM",
-                        new String[]{"Ctrl+Alt+Shift+Esc","Ctrl+Alt+Shift+F12"},f12?1:0,index->{
-                           prefs.edit().putInt("runtime_panel_shortcut",index==1?KeyEvent.KEYCODE_F12:KeyEvent.KEYCODE_ESCAPE).apply();
-                           this.showFigmaWorkspaceSettings();
-                        });
-            view.toggle(988,"5312a","Перехват системных сочетаний",this::keyboardCaptureEnabled,this::toggleSystemKeyboardCapture);
-            view.note(1112,"Передаёт системные сочетания в VM. Для этого нужна служба U-AVF.");
-         }
-         case 3 -> {
-            view.card(476,256);
-            this.workspaceToggle(view,476,"4f479","Звук гостевой системы","linux_audio_output_enabled",true,onRestart);
-            this.workspaceToggle(view,604,"ff92e","Интернет","linux_internet_enabled",true,onRestart);
-         }
-         case 4 -> {
-            File disk=this.persistentUbuntuDiskFile();
-            view.storage(disk.isFile()?formatBytes(disk.length())+" · диск U-AVF":"Диск ещё не создан",
-                  disk.isFile()?this::showStorageExpansion:null,
-                  ()->this.renderProductScreen(ProductScreen.INSTALL_RECOVERY));
-         }
+      switch (tab) {
+         case 0 -> showPerformanceSettings(view);
+         case 1 -> showDisplaySettings(view);
+         case 2 -> showInputSettings(view);
+         case 3 -> showGuestServiceSettings(view);
+         case 4 -> showStorageSettings(view);
       }
+   }
+
+   private void showPerformanceSettings(FigmaWorkspaceSettings view) {
+      var prefs = this.getPreferences(0);
+      var config = this.workspaceConfig();
+      Mode displayMode = this.configuredDisplayMode();
+      int[] memory={2,3,4,6};
+      int selected=config.ramGiB==2?0:config.ramGiB==3?1:config.ramGiB==6?3:2;
+      view.card(476,612);
+      view.segments(520,"Память",new String[]{"2 ГБ","3 ГБ","4 ГБ","6 ГБ"},selected,index->{
+         if(this.isManagedVmRunning()) {ProductDialog.notice(this,"Память","Завершите Ubuntu перед изменением памяти.");return false;}
+         android.app.ActivityManager.MemoryInfo info=new android.app.ActivityManager.MemoryInfo();
+         this.getSystemService(android.app.ActivityManager.class).getMemoryInfo(info);
+         if(memory[index]*1073741824L > info.totalMem-3L*1073741824L) {
+            ProductDialog.notice(this,"Память","Оставьте для Android не менее 3 ГБ.");return false;
+         }
+         prefs.edit().putInt("linux_ram_gib",memory[index]).apply();
+         return true;
+      });
+      view.segments(736,"Виртуальные процессоры",new String[]{"Все ядра","1 vCPU"},config.oneCpu?1:0,index->{
+         if(this.isManagedVmRunning()) {ProductDialog.notice(this,"Процессор","Завершите Ubuntu перед изменением процессора.");return false;}
+         prefs.edit().putBoolean("linux_one_cpu",index==1).apply();
+         return true;
+      });
+      view.option(952,"aea17","Графический вывод",DISPLAY_MODES[displayMode.ordinal()],
+            ()->this.openWorkspaceSettingsTab("Display"));
+   }
+
+   private void showDisplaySettings(FigmaWorkspaceSettings view) {
+      Mode displayMode = this.configuredDisplayMode();
+      boolean running=this.isManagedVmRunning();
+      boolean canResize=!running;
+      boolean showPlasma=running && !this.wizardSettingsActive
+            && this.getPreferences(0).getBoolean("linux_current_boot_installed",false)
+            && !"unavailable".equals(this.plasmaInstallState);
+      view.card(476,canResize?450:showPlasma?506:332);
+      String[] modes=MavkRuntimeAssets.isBundled(this)?DISPLAY_MODES:Arrays.copyOf(DISPLAY_MODES,2);
+      view.displaySelector(516,modes,displayMode.ordinal(),index->{
+         Mode requested = Mode.values()[index];
+         if(requested==this.configuredDisplayMode())return false;
+         if(this.isManagedVmRunning()) {
+            ProductDialog.notice(this,"Графический вывод","Завершите Ubuntu перед сменой режима вывода.");
+            return false;
+         }
+         this.saveDisplayMode(requested,true);
+         view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);
+         return true;
+      },()->{
+         if(view.getParent()==this.homePanel && this.productScreen==ProductScreen.VM_SETTINGS &&
+               "Display".equals(this.workspaceSettingsTab))this.showFigmaWorkspaceSettings();
+      });
+      view.note(702,DISPLAY_DESCRIPTIONS[displayMode.ordinal()]);
+      if (canResize) showResolutionOptions(view, displayMode);
+      else view.note(756, "Завершите Ubuntu перед сменой режима вывода.");
+      if (showPlasma) showPlasmaInstallOption(view);
+   }
+
+   private void showResolutionOptions(FigmaWorkspaceSettings view, Mode displayMode) {
+      String[] resolutionModes={"1280x800","1920x1080","1920x1200"};
+      int selected=java.util.Arrays.asList(resolutionModes).indexOf(this.displayConfig(displayMode).resolution());
+      view.choice(780,"aea17","Разрешение",new String[]{"1280 × 800","1920 × 1080","1920 × 1200"},selected,index->{
+         if(this.isManagedVmRunning())return;
+         this.displaySettings().setResolution(displayMode,resolutionModes[index]);
+         this.showFigmaWorkspaceSettings();
+      });
+   }
+
+   private void showPlasmaInstallOption(FigmaWorkspaceSettings view) {
+      String state=this.plasmaInstallState;
+      String label=switch(state) {
+         case "installing" -> "Установка идёт…";
+         case "ready" -> "Установлена";
+         case "failed" -> "Повторить установку";
+         default -> "Установить";
+      };
+      view.option(840,"aea17","KDE Plasma X11 · Mavk",label,
+            "ready".equals(state)||"installing".equals(state)?null:this::requestPlasmaInstall);
+   }
+
+   private void showInputSettings(FigmaWorkspaceSettings view) {
+      var prefs = this.getPreferences(0);
+      view.card(476,704);
+      this.workspaceToggle(view,476,"1bf09","Общий буфер обмена","linux_text_clipboard_enabled",false,"");
+      this.workspaceToggle(view,604,"12205","Жест от правого края","runtime_edge_gesture",false,"");
+      this.workspaceToggle(view,732,"836de","Скрывать кнопку панели","hide_runtime_panel_button",false,"");
+      boolean f12=prefs.getInt("runtime_panel_shortcut",KeyEvent.KEYCODE_ESCAPE)==KeyEvent.KEYCODE_F12;
+      view.choice(860,"5312a","Открыть панель VM",
+                  new String[]{"Ctrl+Alt+Shift+Esc","Ctrl+Alt+Shift+F12"},f12?1:0,index->{
+                     prefs.edit().putInt("runtime_panel_shortcut",index==1?KeyEvent.KEYCODE_F12:KeyEvent.KEYCODE_ESCAPE).apply();
+                     this.showFigmaWorkspaceSettings();
+                  });
+      view.toggle(988,"5312a","Перехват системных сочетаний",this::keyboardCaptureEnabled,this::toggleSystemKeyboardCapture);
+      view.note(1112,"Передаёт системные сочетания в VM. Для этого нужна служба U-AVF.");
+   }
+
+   private void showGuestServiceSettings(FigmaWorkspaceSettings view) {
+      String onRestart = this.isManagedVmRunning() ? "Изменение вступит в силу после перезапуска Ubuntu."
+            : "Настройка применяется при запуске Ubuntu.";
+      view.card(476,256);
+      this.workspaceToggle(view,476,"4f479","Звук гостевой системы","linux_audio_output_enabled",true,onRestart);
+      this.workspaceToggle(view,604,"ff92e","Интернет","linux_internet_enabled",true,onRestart);
+   }
+
+   private void showStorageSettings(FigmaWorkspaceSettings view) {
+      File disk=this.persistentUbuntuDiskFile();
+      view.storage(disk.isFile()?formatBytes(disk.length())+" · диск U-AVF":"Диск ещё не создан",
+            disk.isFile()?this::showStorageExpansion:null,
+            ()->this.renderProductScreen(ProductScreen.INSTALL_RECOVERY));
    }
 
    private void openWorkspaceSettingsTab(String tab) {
@@ -2020,14 +2058,11 @@ public final class MainActivity extends Activity {
                this::beginCompatibilityCheck,()->this.renderProductScreen(ProductScreen.DIAGNOSTIC_RUNS),
                ()->this.renderProductScreen(ProductScreen.DIAGNOSTIC_LOG),this::requestDiagnosticExport,this::showRunningDesktop);
       } else if (screen==ProductScreen.DIAGNOSTIC_RUNS) {
-         var preferences=this.getPreferences(0);
-         var runs=CompatibilityHistory.read(preferences.getString("compatibility_history_v1",""));
-         String legacy=preferences.getString("compatibility_execution_report","");
-         canvas=new FigmaDiagnostics(this,query->CompatibilityHistory.search(runs,query,legacy),
+         canvas = new FigmaDiagnostics(this, this.diagnostics.compatibilitySearch(),
                this::navigateBack,this::copyDiagnosticText,
                ()->this.copyDiagnosticText(this.buildDiagnosticSummary()),this::requestDiagnosticExport);
       } else {
-         canvas=new FigmaDiagnostics(this,this.diagnosticEntries(),
+         canvas=new FigmaDiagnostics(this,this.diagnostics.entries(),
                this::navigateBack,
                this::copyDiagnosticText,()->this.copyDiagnosticText(this.buildDiagnosticSummary()),this::requestDiagnosticExport);
       }
@@ -2054,53 +2089,7 @@ public final class MainActivity extends Activity {
    }
 
    private void recordObservedRuntimeEvents() {
-      if(!this.transition.visible())return;
-      int generation=this.transition.generation();
-      if(this.journalGeneration!=generation){this.journalGeneration=generation;this.journalSeen.clear();}
-      boolean win=this.selectedProfile==LaunchProfile.WINDOWS;
-      for(String key:this.transition.events().keySet()) {
-         if(!this.journalSeen.add(key))continue;
-         String label=switch(key) {
-            case "Start requested" -> "Запрошен запуск";
-            case "Display reconnect requested" -> "Display reconnection requested";
-            case "Virtual machine created" -> "Виртуальная машина создана";
-            case "UEFI started" -> "Запущен UEFI";
-            case "Linux kernel" -> "Подтверждена загрузка ядра Linux";
-            case "Windows kernel" -> "Windows kernel resumed after bootstrap";
-            case "Windows setup frame" -> "First Windows Setup frame presented";
-            case "Windows display reconnecting" -> "Reconnecting to the Windows display";
-            case "systemd userspace" -> "Запущены службы systemd";
-            case "GDM started" -> "Запущен дисплейный менеджер";
-            case "Display connected" -> "Подключён вывод изображения";
-            case "Desktop presented" -> this.transition.events().containsKey("Windows setup frame")
-                  ?null:win?"First installed Windows frame presented":"Показан первый кадр рабочего стола";
-            case "Shutdown requested" -> "Запрошено завершение";
-            case "Restart requested" -> "Запрошен перезапуск";
-            case "Power request accepted" -> "Гость принял запрос питания";
-            case "Filesystem sync" -> "Подтверждена синхронизация файлов";
-            case "VM stopped" -> "Виртуальная машина остановлена";
-            default -> null;
-         };
-         if(label!=null)this.appendDiagnosticEvent(
-               key.equals("Virtual machine created")||key.equals("VM stopped")?"AVF":win?"Windows":"Ubuntu",
-               "Событие",label);
-      }
-      if(this.transition.mode()==RuntimeTransition.Mode.ERROR && this.journalSeen.add("error"))
-         this.appendDiagnosticEvent(win?"Windows":"Ubuntu","Ошибка",
-               this.transition.operation()==RuntimeTransition.Mode.DISPLAY_RECONNECT?"Display reconnection failed":
-                     win && !this.transition.detail().isBlank()?this.transition.detail():
-                     "Операция виртуальной машины завершилась ошибкой");
-   }
-
-   private void appendDiagnosticEvent(String component,String level,String event) {
-      var prefs = this.getPreferences(0);
-      String history = prefs.getString("diagnostic_events_v1", "");
-      prefs.edit().putString("diagnostic_events_v1",
-            this.journal.append(history, Instant.now(), component, level, event)).apply();
-   }
-
-   private java.util.List<DiagnosticJournal.Entry> diagnosticEntries() {
-      return this.journal.newestFirst(this.getPreferences(0).getString("diagnostic_events_v1", ""));
+      this.diagnostics.observe(this.transition, this.selectedProfile == LaunchProfile.WINDOWS);
    }
 
    private String buildDiagnosticSummary() {
@@ -2116,18 +2105,7 @@ public final class MainActivity extends Activity {
             .append("\nAVF: ").append(UiLanguage.english(device[1])).append("\nPermissions: ").append(UiLanguage.english(device[2]))
             .append("\nPlatform: ").append(UiLanguage.english(device[3])).append("\nBoot and vsock: ").append(UiLanguage.english(guest[0]))
             .append("\nGraphics: ").append(UiLanguage.english(guest[1]));
-      var preferences=this.getPreferences(0);
-      long windowsSetup=preferences.getLong("last_setup_windows",0);
-      long windowsDisplay=preferences.getLong("last_display_windows",0);
-      report.append("\nWindows disk: ").append(this.windowsSetupDiskReady()?"Prepared workspace":"Not prepared");
-      if(windowsSetup>0)report.append("\nLast Windows Setup display: ").append(Instant.ofEpochMilli(windowsSetup));
-      if(windowsDisplay>0)report.append("\nLast installed Windows display: ").append(Instant.ofEpochMilli(windowsDisplay));
-      report.append("\n\nObserved events\n");
-      for(DiagnosticJournal.Entry entry:this.diagnosticEntries())report.append(entry.line()).append('\n');
-      String execution=CompatibilityHistory.search(
-            CompatibilityHistory.read(preferences.getString("compatibility_history_v1","")), "",
-            preferences.getString("compatibility_execution_report",""));
-      if(!execution.isEmpty())report.append("\nCompatibility reports\n").append(execution);
+      this.diagnostics.appendToReport(report, this.windowsSetup.diskReady());
       return report.toString();
    }
 
@@ -2170,41 +2148,15 @@ public final class MainActivity extends Activity {
 
    private void deleteUbuntuWorkspace() {
       try {
-         if(this.storageExpanding)throw new IllegalStateException("Wait for the storage operation before deleting this workspace.");
-         if (this.isManagedVmRunning() || this.activeFrameVmName != null) {
-            throw new IllegalStateException("The Ubuntu VM is running; it was not deleted.");
+         if (this.storageExpanding) {
+            throw new IllegalStateException("Wait for the storage operation before deleting this workspace.");
          }
-
-         File var1 = this.persistentUbuntuDiskFile();
-         String var10000 = this.getFilesDir().getCanonicalPath();
-         String var2 = var10000 + File.separator;
-         String var3 = var1.getCanonicalPath();
-         if (!var3.startsWith(var2) || !var1.getName().equals("uavf-ubuntu-persistent-one-disk.raw")) {
-            throw new SecurityException("Refusing to delete a file outside the named app-private workspace.");
-         }
-
-         try {
-            Class var4 = Class.forName("android.system.virtualmachine.VirtualMachineManager");
-            Object var5 = this.getSystemService(var4);
-            Object var6 = var4.getMethod("get", String.class).invoke(var5, "winavf-frame-bridge-test-ubuntu-24045");
-            if (var6 != null) {
-               var4.getMethod("delete", String.class).invoke(var5, "winavf-frame-bridge-test-ubuntu-24045");
-            }
-         } catch (ClassNotFoundException var7) {
-            throw new IllegalStateException("AVF VM record could not be checked; workspace was preserved.", var7);
-         }
-
-         if (var1.exists() && !var1.delete()) {
-            throw new IllegalStateException("Could not delete the persistent Ubuntu disk.");
-         }
-
-         this.getPreferences(0).edit().putBoolean("ubuntu_installed_runtime_ready", false).putBoolean("ubuntu_install_handoff_pending", false).putBoolean("ubuntu_install_handoff_attempted", false).apply();
+         this.ubuntuStorage.delete();
          this.runOnUiThread(() -> this.renderProductScreen(ProductScreen.MODE_SELECTION));
          this.show("Ubuntu workspace deleted. The verified source ISO was kept.");
-      } catch (Throwable var8) {
-         this.show("Workspace was not deleted: " + rootMessage(var8));
+      } catch (Exception error) {
+         this.show("Workspace was not deleted: " + rootMessage(error));
       }
-
    }
 
    private Typeface productFont;
@@ -2243,8 +2195,7 @@ public final class MainActivity extends Activity {
    }
 
    private boolean isoPresent() {
-      File var1 = new File(this.getExternalFilesDir((String)null), "ubuntu-24.04.5-desktop-arm64.iso");
-      return var1.isFile() && var1.length() == 3967463424L;
+      return UbuntuIsoImport.present(this.getExternalFilesDir(null));
    }
 
    private boolean hasAvfPermissions() {
@@ -2338,7 +2289,7 @@ public final class MainActivity extends Activity {
    private void reconnectRunningFrameVmIfPresent() {
       WindowsSetupRuntime setup=VmRuntimeService.windowsSetup();
       if(setup!=null && (setup.active() || setup.continueInstalled())) {
-         this.attachWindowsSetup(setup);
+         this.windowsSession.attach(setup);
          return;
       }
       if(!this.restoringDisplay.compareAndSet(false,true))return;
@@ -2382,37 +2333,36 @@ public final class MainActivity extends Activity {
       this.openInstallDocumentPicker(REQUEST_UBUNTU_ISO,false);
    }
 
-   protected void onActivityResult(int var1, int var2, Intent var3) {
-      super.onActivityResult(var1, var2, var3);
-      if(var1==REQUEST_WINDOWS_INSTALL_ISO && var2==RESULT_OK && var3!=null && var3.getData()!=null) {
-         Uri source=var3.getData();
-         this.startWindowsIsoInspection(source);
-         return;
+   @Override
+   protected void onActivityResult(int requestCode, int resultCode, Intent result) {
+      super.onActivityResult(requestCode, resultCode, result);
+      if (resultCode != RESULT_OK || result == null || result.getData() == null) return;
+
+      Uri selected = result.getData();
+      switch (requestCode) {
+         case REQUEST_WINDOWS_INSTALL_ISO -> this.windowsSetup.selectIso(selected);
+         case REQUEST_WINDOWS_WINPE -> this.windowsSetup.selectWinpe(selected);
+         case REQUEST_DIAGNOSTIC_EXPORT -> this.exportDiagnostics(selected);
+         case REQUEST_UBUNTU_ISO, REQUEST_UBUNTU_LIVE_ISO -> {
+            boolean live = requestCode == REQUEST_UBUNTU_LIVE_ISO;
+            new Thread(() -> this.importUbuntuIso(selected, live), "U-AVF-import-ubuntu-iso").start();
+         }
+         default -> {}
       }
-      if(var1==REQUEST_WINDOWS_WINPE && var2==RESULT_OK && var3!=null && var3.getData()!=null) {
-         this.selectWindowsWinpe(var3.getData());
-         return;
-      }
-      if(var1==REQUEST_DIAGNOSTIC_EXPORT && var2==RESULT_OK && var3!=null && var3.getData()!=null) {
-         Uri destination=var3.getData();
-         byte[] report=this.buildDiagnosticSummary().getBytes(StandardCharsets.UTF_8);
-         new Thread(()->{
-            try(OutputStream file=this.getContentResolver().openOutputStream(destination,"wt")) {
-               if(file==null)throw new java.io.IOException("No output stream");
-               file.write(report);
-            } catch(Exception error) {
-               this.show("Не удалось сохранить отчёт.");
-               return;
-            }
-            this.show("Диагностический отчёт сохранён.");
-         },"U-AVF-diagnostic-export").start();
-         return;
-      }
-      if ((var1==REQUEST_UBUNTU_ISO || var1==REQUEST_UBUNTU_LIVE_ISO) && var2==RESULT_OK
-            && var3!=null && var3.getData()!=null) {
-         Uri var4 = var3.getData();
-         (new Thread(() -> this.importUbuntuIso(var4,var1==REQUEST_UBUNTU_LIVE_ISO), "U-AVF-import-ubuntu-iso")).start();
-      }
+   }
+
+   private void exportDiagnostics(Uri destination) {
+      byte[] report = this.buildDiagnosticSummary().getBytes(StandardCharsets.UTF_8);
+      new Thread(() -> {
+         try (OutputStream file = this.getContentResolver().openOutputStream(destination, "wt")) {
+            if (file == null) throw new IOException("No output stream");
+            file.write(report);
+         } catch (Exception error) {
+            this.show("Не удалось сохранить отчёт.");
+            return;
+         }
+         this.show("Диагностический отчёт сохранён.");
+      }, "U-AVF-diagnostic-export").start();
    }
 
    private void openWindowsIsoPicker() {
@@ -2434,28 +2384,11 @@ public final class MainActivity extends Activity {
       }
    }
 
-   private boolean windowsSetupDiskReady() {
-      File disk=WindowsSetupDisk.workspace(this).toFile();
-      return disk.isFile() && disk.length()==WindowsSetupDisk.TARGET_BYTES;
-   }
-
-   private static String windowsSetupLabel(WindowsSetupProgress progress,boolean ready) {
-      if(ready)return "Диск Windows сохранён";
-      if(progress.phase()==null)return progress.error().isEmpty()?
-            "Экспериментальная установка Windows":"Не удалось подготовить диск";
-      return switch(progress.phase()) {
-         case CHECKING_ISO -> "Проверка Windows ISO…";
-         case CHECKING -> "Проверка установочных файлов…";
-         case COPYING -> "Копирование шаблона WinPE…";
-         case FINALIZING -> "Проверка разметки диска…";
-      };
-   }
-
-   private void refreshWindowsSetupWhileActive(View screen,WindowsSetupProgress seen) {
+   private void refreshWindowsSetupWhileActive(View screen,WindowsSetupFlow.Progress seen) {
       this.homePanel.postDelayed(()->{
          if(this.activityDestroyed || this.productScreen!=ProductScreen.WINDOWS_HOME ||
                screen.getParent()!=this.homePanel)return;
-         if(windowsSetupProgress!=seen)this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
+         if(this.windowsSetup.progress()!=seen)this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
          else this.refreshWindowsSetupWhileActive(screen,seen);
       },700);
    }
@@ -2477,101 +2410,7 @@ public final class MainActivity extends Activity {
       }
    }
 
-   private WindowsWorkspaceMedia windowsMedia() {
-      return new WindowsWorkspaceMedia(this.getApplicationContext(), this.getPreferences(0));
-   }
-
-   private void openWindowsSetup() {
-      if(windowsSetupProgress.phase()!=null) {
-         ProductDialog.notice(this,"Windows ARM64",windowsSetupLabel(windowsSetupProgress,false));
-         return;
-      }
-      java.nio.file.Path workspace=WindowsSetupDisk.workspace(this);
-      if(java.nio.file.Files.exists(workspace,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-         this.inspectPreparedWindowsDisk(workspace);
-         return;
-      }
-      Uri iso=this.windowsMedia().selected(WindowsWorkspaceMedia.Document.ISO);
-      Uri winpe=this.windowsMedia().selected(WindowsWorkspaceMedia.Document.WINPE);
-      long required=WindowsSetupDisk.requiredFreeBytes(),free=this.getFilesDir().getUsableSpace();
-      String info=UiLanguage.format("Нужны Windows 11 ARM64 25H2 (ru-RU), сборка %s, и соответствующий шаблон WinPE.",
-            WindowsSetupDisk.INSTALL_BUILD)
-            +"\n"+WindowsSetupDisk.REFERENCE_TEMPLATE
-            +"\n\n"+UiLanguage.format("Свободно %s · требуется %s",formatBytes(free),formatBytes(required));
-      String failure=windowsSetupProgress.error();
-      if(!failure.isEmpty())info+="\n\n"+failure;
-      boolean ready=iso!=null && winpe!=null;
-      String[] options={iso!=null?"Заменить ISO…":"Выбрать ISO…",
-            winpe!=null?"Заменить шаблон WinPE…":"Выбрать шаблон WinPE…","Подготовить диск"};
-      ProductDialog.choose(this,"Установка Windows ARM64",info,
-            ready?options:Arrays.copyOf(options,2),-1,index->{
-               if(index==0)this.openWindowsIsoPicker();
-               else if(index==1)this.openWindowsDocumentPicker(REQUEST_WINDOWS_WINPE);
-               else this.startWindowsSetupPreparation(iso,winpe);
-            });
-   }
-
-   private WindowsSetupRuntime windowsSetupViewer;
-   private boolean windowsSetupLayoutChecking;
-
-   private void inspectPreparedWindowsDisk(java.nio.file.Path disk) {
-      if (this.windowsSetupLayoutChecking) return;
-      this.windowsSetupLayoutChecking = true;
-      var media = this.windowsMedia();
-      new Thread(() -> {
-         WindowsWorkspaceMedia.BootOptions options = null;
-         try {
-            options = media.inspect(disk);
-         } catch (IOException | LinkageError error) {
-            Log.w("UAVF-Windows-Setup", "Windows disk layout check failed", error);
-         }
-         var result = options;
-         this.runOnUiThread(() -> this.showWindowsBootOptions(result));
-      }, "U-AVF-Windows-disk-layout").start();
-   }
-
-   private void showWindowsBootOptions(WindowsWorkspaceMedia.BootOptions options) {
-      this.windowsSetupLayoutChecking = false;
-      if (this.activityDestroyed || this.productScreen != ProductScreen.WINDOWS_HOME || this.isManagedVmRunning()) return;
-      if (options == null) {
-         ProductDialog.notice(this, "Windows Setup",
-               "Не удалось проверить разметку диска Windows. Подробности доступны в журнале.");
-         return;
-      }
-      switch (options) {
-         case INSTALLED -> ProductDialog.show(this, "Windows ARM64",
-               "Загрузчик установленной Windows проверен. При первом запуске продолжится настройка системы.",
-               "Запустить", false, () -> this.startPreparedWindowsSetup(WindowsSetupRuntime.Boot.INSTALLED));
-         case PREVIEW_AND_INSTALL -> this.offerWindowsSetupBoot(true);
-         case PREVIEW -> this.offerWindowsSetupBoot(false);
-         case PENDING_INSTALL -> ProductDialog.notice(this, "Диск Windows сохранён",
-               "Найден раздел NTFS. Завершение установки не подтверждено. Повторный запуск пока недоступен.");
-         case PARTITIONED -> ProductDialog.notice(this, "Диск Windows сохранён",
-               "Диск уже размечен. Повторный запуск пока недоступен.");
-         case UNAVAILABLE -> ProductDialog.notice(this, "Диск Windows подготовлен",
-               "Диск сохранён в U-AVF. Запуск Windows Setup с этого диска пока недоступен.");
-      }
-   }
-
-   private void offerWindowsSetupBoot(boolean guided) {
-      long required=WindowsSetupDisk.requiredInstallFreeBytes(), available=this.getFilesDir().getUsableSpace();
-      if(guided && available>=required) {
-         ProductDialog.choose(this,"Windows Setup",
-               "Установка Windows 11 Pro начнётся автоматически после подтверждения.",
-               new String[]{"Открыть WinPE","Установить Windows"},-1,index->{
-                  if(index==0)this.startPreparedWindowsSetup(WindowsSetupRuntime.Boot.PREVIEW);
-                  else ProductDialog.show(this,"Установить Windows",
-                        "U-AVF создаст разделы на подготовленном виртуальном диске и начнёт установку Windows 11 Pro.",
-                        "Установить",false,()->this.startPreparedWindowsSetup(WindowsSetupRuntime.Boot.INSTALL));
-               });
-         return;
-      }
-      String description=guided?UiLanguage.format("Для автоматической установки нужно %1$s свободного места. Сейчас доступно %2$s.",
-            formatBytes(required),formatBytes(available)):
-            UiLanguage.text("Можно открыть WinPE и проверить экран и ввод. Автоматическая установка пока недоступна в этой сборке.");
-      ProductDialog.show(this,"Windows Setup",description,"Открыть WinPE",false,
-            ()->this.startPreparedWindowsSetup(WindowsSetupRuntime.Boot.PREVIEW));
-   }
+   private WindowsSetupSession windowsSession;
 
    private void startPreparedWindowsSetup(WindowsSetupRuntime.Boot boot) {
       if(this.isManagedVmRunning() || VmLifecycle.compatibilityProbeActive())return;
@@ -2580,71 +2419,79 @@ public final class MainActivity extends Activity {
          return;
       }
       try {
-         if(VmRuntimeService.startWindowsSetup(this,boot))this.attachWindowsSetup(VmRuntimeService.windowsSetup());
+         if(VmRuntimeService.startWindowsSetup(this,boot))this.windowsSession.attach(VmRuntimeService.windowsSetup());
       } catch(RuntimeException error) {
          ProductDialog.notice(this,"Windows Setup",rootMessage(error));
       }
    }
 
-   private void attachWindowsSetup(WindowsSetupRuntime setup) {
-      if(this.activityDestroyed || this.windowsSetupViewer==setup)return;
-      this.windowsSetupViewer=setup;
-      this.selectedProfile=LaunchProfile.WINDOWS;
-      if(setup.rebootSuccessor()) {
-         if(this.transition.mode()!=RuntimeTransition.Mode.REBOOT)
-            this.beginRuntimeTransition(RuntimeTransition.Mode.REBOOT);
-         this.transition.event("VM stopped","AVF reboot callback",android.os.SystemClock.elapsedRealtime());
-      } else {
-         this.beginRuntimeTransition(RuntimeTransition.Mode.BOOT);
-      }
-      this.watchWindowsSetup(setup,null);
+   private WindowsSetupSession.View windowsSessionView() {
+      return new WindowsSetupSession.View() {
+         @Override public void attached(WindowsSetupRuntime setup) {
+            selectedProfile = LaunchProfile.WINDOWS;
+            if (setup.rebootSuccessor()) showWindowsReboot();
+            else beginRuntimeTransition(RuntimeTransition.Mode.BOOT);
+         }
+
+         @Override public void observed(WindowsSetupRuntime setup) {
+            if (transition.visible()) describeWindowsSetup(setup, false);
+         }
+
+         @Override public void phaseChanged(WindowsSetupRuntime setup, WindowsSetupRuntime.Phase phase) {
+            onWindowsPhaseChanged(setup, phase);
+         }
+
+         @Override public void retryDisplay(WindowsSetupRuntime setup) {
+            startWindowsSetupDisplay(setup);
+         }
+
+         @Override public void detachDisplay() {
+            detachWindowsSetupDisplay();
+         }
+
+         @Override public void finished(WindowsSetupRuntime setup, WindowsSetupRuntime.Phase phase) {
+            finishWindowsSession(setup, phase);
+         }
+      };
    }
 
-   private void watchWindowsSetup(WindowsSetupRuntime setup, WindowsSetupRuntime.Phase previous) {
-      if(this.activityDestroyed || this.windowsSetupViewer!=setup)return;
-      WindowsSetupRuntime.Phase phase=setup.phase();
-      long now=android.os.SystemClock.elapsedRealtime();
-      if(this.transition.visible()) {
-         if(setup.installing())this.transition.event("Windows installation","Guided install requested",now);
-         else if(setup.setupEnvironment())this.transition.event("Windows setup","WinPE requested",now);
-      }
-      if(phase!=previous) {
-         if(phase==WindowsSetupRuntime.Phase.BOOTING)
-            this.transition.event("Virtual machine created","Windows Setup AVF owner",now);
-         if(phase==WindowsSetupRuntime.Phase.WAITING_DISPLAY || phase==WindowsSetupRuntime.Phase.DISPLAYING) {
-            this.transition.event("Windows kernel","KD readback and continue",now);
-            if(this.installedEncodedDisplay==null)this.startWindowsSetupDisplay(setup);
+   private void onWindowsPhaseChanged(WindowsSetupRuntime setup, WindowsSetupRuntime.Phase phase) {
+      switch (phase) {
+         case BOOTING -> this.transition.event("Virtual machine created", "Windows Setup AVF owner", SystemClock.elapsedRealtime());
+         case WAITING_DISPLAY, DISPLAYING -> {
+            this.transition.event("Windows kernel", "KD readback and continue", SystemClock.elapsedRealtime());
+            if (this.installedEncodedDisplay == null) this.startWindowsSetupDisplay(setup);
          }
-         if(phase==WindowsSetupRuntime.Phase.STOPPING && setup.restarting()) {
+         case STOPPING -> {
+            if (!setup.restarting()) return;
             this.detachWindowsSetupDisplay();
             this.beginRuntimeTransition(RuntimeTransition.Mode.REBOOT);
-            this.transition.event("VM stopped","AVF reboot callback",now);
+            this.showWindowsReboot();
          }
+         default -> {}
       }
-      if(phase==WindowsSetupRuntime.Phase.DISPLAY_UNAVAILABLE && setup.retryDisplay())
-         this.startWindowsSetupDisplay(setup);
-      if(setup.active()) {
-         this.uiHandler.postDelayed(()->this.watchWindowsSetup(setup,phase),500);
-         return;
+   }
+
+   private void showWindowsReboot() {
+      if (this.transition.mode() != RuntimeTransition.Mode.REBOOT) {
+         this.beginRuntimeTransition(RuntimeTransition.Mode.REBOOT);
       }
-      if(setup.continueInstalled()) {
-         WindowsSetupRuntime installed=VmRuntimeService.windowsSetup();
-         if(installed==setup) {
-            this.uiHandler.postDelayed(()->this.watchWindowsSetup(setup,phase),500);
-         } else if(installed!=null) {
-            this.detachWindowsSetupDisplay();
-            this.attachWindowsSetup(installed);
-         }
-         return;
-      }
-      this.windowsSetupViewer=null;
-      this.detachWindowsSetupDisplay();
-      if(phase==WindowsSetupRuntime.Phase.FAILED) {
-         this.transition.failure(setup.error(),now);
+      this.transition.event("VM stopped", "AVF reboot callback", SystemClock.elapsedRealtime());
+   }
+
+   private void describeWindowsSetup(WindowsSetupRuntime setup, boolean active) {
+      long now = SystemClock.elapsedRealtime();
+      if (setup.installing()) this.transition.event("Windows installation", active ? "Guided install active" : "Guided install requested", now);
+      else if (setup.setupEnvironment()) this.transition.event("Windows setup", active ? "WinPE active" : "WinPE requested", now);
+   }
+
+   private void finishWindowsSession(WindowsSetupRuntime setup, WindowsSetupRuntime.Phase phase) {
+      if (phase == WindowsSetupRuntime.Phase.FAILED) {
+         this.transition.failure(setup.error(), SystemClock.elapsedRealtime());
          this.transitionTick.run();
       } else {
          this.transition.dismiss();
-         if(this.transitionView!=null)this.transitionView.setVisibility(View.GONE);
+         if (this.transitionView != null) this.transitionView.setVisibility(View.GONE);
          this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
       }
    }
@@ -2661,129 +2508,63 @@ public final class MainActivity extends Activity {
    }
 
    private void startWindowsSetupDisplay(WindowsSetupRuntime setup) {
-      if(this.windowsSetupViewer!=setup || (setup.phase()!=WindowsSetupRuntime.Phase.WAITING_DISPLAY
-            && setup.phase()!=WindowsSetupRuntime.Phase.DISPLAYING))return;
-      if(this.installedEncodedDisplay!=null)this.installedEncodedDisplay.closeSilently();
-      if(this.installedEncodedSurface!=null)this.page.removeView(this.installedEncodedSurface);
-      int connectionEpoch = this.displayConnection.begin();
-      android.view.SurfaceView surface=new android.view.SurfaceView(this);
-      this.installedEncodedSurface=surface;
-      this.page.addView(surface,0,new FrameLayout.LayoutParams(-1,-1,android.view.Gravity.CENTER));
-      surface.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->this.fitEncodedSurface());
-      EncodedDisplayProbe receiver=new EncodedDisplayProbe(this,setup,60f,()->{
-         if(this.installedEncodedSurface!=surface || this.activityDestroyed || !setup.active())return;
-         this.displayConnection.publishInput(connectionEpoch, null);
-         this.frameVisible=false;
-         setup.displayFailed();
-         // Windows can replace its capture session during sign-in. Give it time
-         // to reconnect before taking over the screen with a status panel.
-         this.uiHandler.postDelayed(()->{
-            if(this.windowsSetupViewer!=setup || !setup.active() || this.frameVisible
-                  || this.transition.mode()==RuntimeTransition.Mode.REBOOT)return;
-            if(!this.transition.visible())this.beginRuntimeTransition(RuntimeTransition.Mode.BOOT);
-            if(setup.installing())this.transition.event("Windows installation","Guided install active",
-                  android.os.SystemClock.elapsedRealtime());
-            else if(setup.setupEnvironment())this.transition.event("Windows setup","WinPE active",
-                  android.os.SystemClock.elapsedRealtime());
-            this.transition.event("Windows display reconnecting","Waiting for replacement stream",
-                  android.os.SystemClock.elapsedRealtime());
-         },2500);
-      },640,480);
+      if (!this.windowsSession.viewing(setup) || (setup.phase() != WindowsSetupRuntime.Phase.WAITING_DISPLAY
+            && setup.phase() != WindowsSetupRuntime.Phase.DISPLAYING)) return;
+      if (this.installedEncodedDisplay != null) this.installedEncodedDisplay.closeSilently();
+      if (this.installedEncodedSurface != null) this.page.removeView(this.installedEncodedSurface);
+      int epoch = this.displayConnection.begin();
+      android.view.SurfaceView surface = this.addGuestDisplaySurface();
+      this.installedEncodedSurface = surface;
+      surface.addOnLayoutChangeListener((view, l, t, r, b, ol, ot, or, ob) -> this.fitEncodedSurface());
+      var receiver = new EncodedDisplayProbe(this, setup, 60f,
+            () -> this.onWindowsDisplayEnded(setup, surface, epoch), 640, 480);
       receiver.acceptNativeWindowsMode();
-      receiver.onStreamGeometry(()->{
-         if(this.installedEncodedSurface!=surface || this.activityDestroyed)return;
-         this.guestFrameWidth=receiver.streamWidth();
-         this.guestFrameHeight=receiver.streamHeight();
-         this.fitEncodedSurface();
-      });
-      this.installedEncodedDisplay=receiver;
-      receiver.startEmbedded(surface,input->{
-         if(this.installedEncodedSurface==surface)this.displayConnection.publishInput(connectionEpoch, input);
-      },()->{
-         if(this.installedEncodedSurface!=surface || this.activityDestroyed || !setup.displayReady())return;
-         this.guestFrameWidth=receiver.streamWidth();
-         this.guestFrameHeight=receiver.streamHeight();
-         this.fitEncodedSurface();
-         this.frameSurface.setEncodedMode(true,this.guestFrameWidth,this.guestFrameHeight);
-         this.frameVisible=true;
-         if(setup.setupEnvironment())
-            this.transition.event("Windows setup frame","Validated WinPE Surface frame",
-                  android.os.SystemClock.elapsedRealtime());
-         this.completeDesktopTransition();
-         this.showRunningDesktop();
-      },()->{
-         if(this.installedEncodedSurface==surface && !this.activityDestroyed)
-            this.startWindowsSetupDisplay(setup);
+      receiver.onStreamGeometry(() -> this.onWindowsGeometry(surface, receiver));
+      this.installedEncodedDisplay = receiver;
+      receiver.startEmbedded(surface, input -> {
+         if (this.installedEncodedSurface == surface) this.displayConnection.publishInput(epoch, input);
+      }, () -> this.onWindowsFirstFrame(setup, surface, receiver), () -> {
+         if (this.windowsSurfaceCurrent(surface)) this.startWindowsSetupDisplay(setup);
       });
    }
 
-   private void selectWindowsWinpe(Uri source) {
-      new Thread(()->{
-         try {
-            this.windowsMedia().selectWinpe(source);
-            this.runOnUiThread(()->{
-               if(!this.activityDestroyed && this.productScreen==ProductScreen.WINDOWS_HOME)this.openWindowsSetup();
-            });
-         } catch(IOException|SecurityException error) {
-            this.runOnUiThread(()->{
-               if(!this.activityDestroyed)ProductDialog.notice(this,"Windows ARM64",rootMessage(error));
-            });
-         }
-      },"U-AVF-windows-winpe").start();
+   private boolean windowsSurfaceCurrent(android.view.SurfaceView surface) {
+      return this.installedEncodedSurface == surface && !this.activityDestroyed;
    }
 
-   private void startWindowsSetupPreparation(Uri iso,Uri template) {
-      if(iso==null || template==null || windowsSetupProgress.phase()!=null || this.isManagedVmRunning())return;
-      var media = this.windowsMedia();
-      windowsSetupProgress=new WindowsSetupProgress(WindowsSetupDisk.Phase.CHECKING,"");
-      this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
-      new Thread(()->{
-         try {
-            media.prepare(iso, template, phase -> windowsSetupProgress = new WindowsSetupProgress(phase, ""));
-            windowsSetupProgress=new WindowsSetupProgress(null,"");
-         } catch(IOException|RuntimeException|LinkageError error) {
-            Log.w("UAVF-Windows-Setup","Preparation failed",error);
-            windowsSetupProgress=new WindowsSetupProgress(null,rootMessage(error));
-         }
-      },"U-AVF-windows-prepare").start();
+   private void onWindowsGeometry(android.view.SurfaceView surface, EncodedDisplayProbe receiver) {
+      if (!this.windowsSurfaceCurrent(surface)) return;
+      this.guestFrameWidth = receiver.streamWidth();
+      this.guestFrameHeight = receiver.streamHeight();
+      this.fitEncodedSurface();
    }
 
-   private void startWindowsIsoInspection(Uri source) {
-      if(windowsSetupProgress.phase()!=null) {
-         // A silent return made a stuck phase look like a dead button.
-         Log.w("UAVF-Windows-ISO","Selection ignored: Windows step already running ("
-               +windowsSetupProgress.phase()+")");
-         this.show(UiLanguage.text("Подготовка Windows уже выполняется. Дождитесь завершения."));
-         return;
+   private void onWindowsFirstFrame(WindowsSetupRuntime setup, android.view.SurfaceView surface,
+                                    EncodedDisplayProbe receiver) {
+      if (!this.windowsSurfaceCurrent(surface) || !setup.displayReady()) return;
+      this.onWindowsGeometry(surface, receiver);
+      this.frameSurface.setEncodedMode(true, this.guestFrameWidth, this.guestFrameHeight);
+      this.frameVisible = true;
+      if (setup.setupEnvironment()) {
+         this.transition.event("Windows setup frame", "Validated WinPE Surface frame", SystemClock.elapsedRealtime());
       }
-      windowsSetupProgress=new WindowsSetupProgress(WindowsSetupDisk.Phase.CHECKING_ISO,"");
-      if(this.productScreen==ProductScreen.WINDOWS_HOME)this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
-      new Thread(()->this.inspectWindowsIso(source),"U-AVF-windows-iso").start();
+      this.completeDesktopTransition();
+      this.showRunningDesktop();
    }
 
-   private void inspectWindowsIso(Uri source) {
-      try {
-         var result = this.windowsMedia().selectIso(source);
-         windowsSetupProgress=new WindowsSetupProgress(null,"");
-         Log.i("UAVF-Windows-ISO","ARM64_EFI=PASS BOOT_WIM_BYTES="+result.bootWimBytes()
-               +" INSTALL_IMAGE="+(result.esd()?"ESD":"WIM")+" INSTALL_BYTES="+result.installBytes());
-         this.runOnUiThread(()->{
-            if(this.activityDestroyed || this.productScreen!=ProductScreen.WINDOWS_HOME)return;
-            this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
-            if(WindowsSetupDisk.available())this.openWindowsSetup();
-            else ProductDialog.notice(this,"Windows ARM64","Образ содержит загрузчик ARM64 и файлы установки. Загрузка Setup из ISO пока недоступна.");
-         });
-      } catch(IOException|RuntimeException|LinkageError error) {
-         String detail=rootMessage(error);
-         windowsSetupProgress=new WindowsSetupProgress(null,detail);
-         Log.w("UAVF-Windows-ISO","ISO check failed: "+error.getClass().getSimpleName()+": "+detail,error);
-         this.runOnUiThread(()->{
-            if(!this.activityDestroyed && this.productScreen==ProductScreen.WINDOWS_HOME) {
-               this.showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
-               ProductDialog.notice(this,"Windows ARM64",detail);
-            }
-         });
-      }
+   private void onWindowsDisplayEnded(WindowsSetupRuntime setup, android.view.SurfaceView surface, int epoch) {
+      if (!this.windowsSurfaceCurrent(surface) || !setup.active()) return;
+      this.displayConnection.publishInput(epoch, null);
+      this.frameVisible = false;
+      setup.displayFailed();
+      // Sign-in can replace the Windows capture session. Wait briefly before showing progress again.
+      this.uiHandler.postDelayed(() -> {
+         if (!this.windowsSession.viewing(setup) || !setup.active() || this.frameVisible
+               || this.transition.mode() == RuntimeTransition.Mode.REBOOT) return;
+         if (!this.transition.visible()) this.beginRuntimeTransition(RuntimeTransition.Mode.BOOT);
+         this.describeWindowsSetup(setup, true);
+         this.transition.event("Windows display reconnecting", "Waiting for replacement stream", SystemClock.elapsedRealtime());
+      }, 2500);
    }
 
    private void onUbuntuIsoImported(boolean live) {
@@ -2800,118 +2581,18 @@ public final class MainActivity extends Activity {
       });
    }
 
-   private void importUbuntuIso(Uri var1, boolean live) {
-      File var2 = new File(this.getExternalFilesDir((String)null), "ubuntu-24.04.5-desktop-arm64.iso");
-      File var3 = new File(this.getExternalFilesDir((String)null), "ubuntu-24.04.5-desktop-arm64.iso.importing");
-
+   private void importUbuntuIso(Uri source, boolean live) {
       try {
          this.show("Checking the selected official Ubuntu image…");
-         String var4 = this.sha256Uri(var1);
-         if (!"2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14".equals(var4)) {
-            throw new SecurityException("This is not the verified Ubuntu 24.04.5 ARM64 desktop ISO.");
-         }
-
-         MessageDigest var5 = MessageDigest.getInstance("SHA-256");
-         long var6 = 0L;
-         if (var2.isFile() && var2.length() == 3967463424L && "2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14".equals(Digest.hex(Digest.sha256File(var2)))) {
-            this.onUbuntuIsoImported(live);
-            this.show("The selected Ubuntu image matches the copy already staged in U-AVF.");
-            return;
-         }
-
-         InputStream var8 = this.getContentResolver().openInputStream(var1);
-
-         try {
-            if (var8 == null) {
-               throw new IllegalStateException("Could not read the selected file");
-            }
-
-            DigestInputStream var9 = new DigestInputStream(new BufferedInputStream(var8), var5);
-
-            try {
-               FileOutputStream var10 = new FileOutputStream(var3, false);
-
-               try {
-                  byte[] var11 = new byte[1048576];
-
-                  int var12;
-                  while((var12 = var9.read(var11)) >= 0) {
-                     if (var12 != 0) {
-                        var6 += (long)var12;
-                        if (var6 > 3967463424L) {
-                           throw new IllegalArgumentException("Selected image is larger than the supported Ubuntu ISO");
-                        }
-
-                        var10.write(var11, 0, var12);
-                        if ((var6 & 536870911L) < (long)var12) {
-                            long progressBytes = var6;
-                            this.runOnUiThread(() -> this.show("Importing Ubuntu image: " + progressBytes / 1048576L + " MiB"));
-                        }
-                     }
-                  }
-
-                  var10.getFD().sync();
-               } catch (Throwable var20) {
-                  try {
-                     var10.close();
-                  } catch (Throwable var18) {
-                     var20.addSuppressed(var18);
-                  }
-
-                  throw var20;
-               }
-
-               var10.close();
-            } catch (Throwable var21) {
-               try {
-                  var9.close();
-               } catch (Throwable var17) {
-                  var21.addSuppressed(var17);
-               }
-
-               throw var21;
-            }
-
-            var9.close();
-         } catch (Throwable var22) {
-            if (var8 != null) {
-               try {
-                  var8.close();
-               } catch (Throwable var16) {
-                  var22.addSuppressed(var16);
-               }
-            }
-
-            throw var22;
-         }
-
-         if (var8 != null) {
-            var8.close();
-         }
-
-         String var24 = Digest.hex(var5.digest());
-         if (var6 != 3967463424L || !"2BE09CA883921BFF6D8E6B0BFBAFD13E32436553B7086F33BCE3A4C5BAD8BD14".equals(var24)) {
-            var3.delete();
-            throw new SecurityException("This is not the verified Ubuntu 24.04.5 ARM64 desktop ISO (size/hash mismatch)");
-         }
-
-         try {
-            Files.move(var3.toPath(), var2.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-         } catch (AtomicMoveNotSupportedException var19) {
-            Files.move(var3.toPath(), var2.toPath(), StandardCopyOption.REPLACE_EXISTING);
-         }
-
+         boolean alreadyStaged = UbuntuIsoImport.stage(this.getContentResolver(), source,
+               this.getExternalFilesDir(null),
+               bytes -> this.show("Importing Ubuntu image: " + (bytes >> 20) + " MiB"));
          this.onUbuntuIsoImported(live);
-         this.show("Official Ubuntu 24.04.5 ARM64 image verified and ready.");
-      } catch (Throwable var23) {
-         try {
-            var3.delete();
-         } catch (Throwable var15) {
-         }
-
-         this.show("Ubuntu image was not accepted: " + rootMessage(var23));
+         this.show(alreadyStaged ? "The selected Ubuntu image matches the copy already staged in U-AVF."
+               : "Official Ubuntu 24.04.5 ARM64 image verified and ready.");
+      } catch (Exception error) {
+         this.show("Ubuntu image was not accepted: " + rootMessage(error));
       }
-
    }
 
    private void openOfficialUbuntuDownloadPage() {
@@ -2923,123 +2604,30 @@ public final class MainActivity extends Activity {
    }
 
    private void checkDeviceReadiness(boolean shareResult) {
-      String[] checks=new String[FigmaCompatibilityView.CHECKS.length];
-      Arrays.fill(checks,"Not checked");
-      AvfCompatibilityProbe.Status outcome=AvfCompatibilityProbe.Status.INSUFFICIENT_DATA;
-      String report="";
-      String reason="";
-      long guestMemoryBytes=0;
       try {
-         boolean arm64=Arrays.asList(Build.SUPPORTED_ABIS).contains("arm64-v8a");
-         checks[0]=arm64?"Passed · Android "+VERSION.RELEASE+" / ARM64":"Failed · ARM64 required";
-         this.readinessResult(0,checks[0]);
-         boolean managerAvailable=false;
-         try {
-            managerAvailable=this.getSystemService(Class.forName("android.system.virtualmachine.VirtualMachineManager"))!=null;
-         } catch(Exception error) {
-            reason=rootMessage(error);
-         }
-         checks[1]=managerAvailable?"Passed · AVF API available":"Failed · AVF manager unavailable";
-         this.readinessResult(1,checks[1]);
-         boolean permissions=this.hasAvfPermissions();
-         checks[2]=permissions?"Passed · granted":"Failed · permission required";
-         this.readinessResult(2,checks[2]);
-         boolean platformVerified=false;
-         try {
-            for(String asset:BundledPlatformAssets.NAMES)
-               this.verifyBundledAsset(asset,BundledPlatformAssets.size(asset),BundledPlatformAssets.sha256(asset));
-            platformVerified=true;
-            checks[3]="Passed · SHA-256 verified";
-         } catch(Exception error) {
-            checks[3]="Failed · "+rootMessage(error);
-         }
-         this.readinessResult(3,checks[3]);
-         if(!arm64) {
-            outcome=AvfCompatibilityProbe.Status.INCOMPATIBLE;
-            reason="The Android device does not expose an ARM64 ABI.";
-         } else if(permissions && platformVerified && managerAvailable) {
-            AvfCompatibilityProbe probe=new AvfCompatibilityProbe(this);
-            AvfCompatibilityProbe.Result result=probe.run();
-            guestMemoryBytes=result.guestMemoryBytes();
-            outcome=result.status();
-            reason=result.details();
-            checks[4]=result.created()?"Passed": "Failed · VM creation was not confirmed";
-            checks[5]=result.booted()?"Passed":result.created()?"Failed · Kernel marker absent":"Not checked";
-            checks[6]=result.memory()?"Passed":result.booted()?"Failed · Memory proof absent":"Not checked";
-            checks[7]=result.storage()?"Passed":result.vsock()?"Failed · Disk write/read proof absent":"Not checked";
-            checks[8]=result.vsock()?"Passed":result.booted()?"Failed · Vsock proof absent":"Not checked";
-            report=result.report();
-            File dir=this.getExternalFilesDir(null);
-            if(dir!=null) {
-               try {
-                  java.nio.file.Files.writeString(new File(dir,"uavf-avf-compatibility-console.txt").toPath(),probe.consoleTail());
-               } catch(IOException error) {
-                  Log.w("UAVF-Compat","Could not save probe console",error);
-               }
-            }
-         } else if(!permissions) reason="Custom VM permission was not granted.";
-         else if(!platformVerified) reason=checks[3];
-         else if(reason.isEmpty()) reason="Android did not provide a virtualization manager.";
-      } catch(Exception error) {
-         reason=rootMessage(error);
+         var audit = new CompatibilityAudit(this, this.getPreferences(0), this::hasAvfPermissions);
+         var result = audit.run(this::readinessResult);
+         if (shareResult) this.shareCompatibilityResult(result);
       } finally {
-         try {
-            String execution=report.isEmpty()?"AVF_STATUS="+outcome+"\nDETAILS="+reason+"\n":report;
-            StringBuilder readable=new StringBuilder("U-AVF local compatibility\n");
-            readable.append("DEVICE=").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
-                  .append("\nANDROID_SDK=").append(VERSION.SDK_INT).append('\n');
-            for(int i=0;i<checks.length;i++)
-               readable.append(UiLanguage.english(FigmaCompatibilityView.CHECKS[i])).append(" = ").append(checks[i]).append('\n');
-            readable.append(execution).append("UBUNTU_WINDOWS_MAVK=SEPARATE_CHECKS\n");
-            File dir=this.getExternalFilesDir(null);
-            if(dir!=null) {
-               try {
-                  java.nio.file.Files.writeString(new File(dir,"uavf-avf-compatibility.txt").toPath(),readable);
-               } catch(IOException error) {
-                  Log.w("UAVF-Compat","Could not save compatibility report",error);
-               }
-            }
-            String run=java.util.UUID.randomUUID().toString().replace("-","");
-            var preferences=this.getPreferences(0);
-            String history=preferences.getString("compatibility_history_v1","");
-            if(history.isEmpty()) {
-               String previousId=preferences.getString("compatibility_run_id","");
-               String previousReport=preferences.getString("compatibility_execution_report","");
-               if(previousId.matches("[0-9a-f]{32}") && !previousReport.isBlank()) {
-                  history=CompatibilityHistory.append("",new CompatibilityHistory.Run(null,previousId,
-                        preferences.getString("compatibility_avf_status","INSUFFICIENT_DATA"),previousReport));
-               }
-            }
-            history=CompatibilityHistory.append(history,
-                  new CompatibilityHistory.Run(Instant.now(),run,outcome.name(),readable.toString()));
-            var saved=preferences.edit().putString("compatibility_checked_build",Build.FINGERPRINT)
-                  .putInt("compatibility_check_schema",COMPATIBILITY_SCHEMA)
-                  .putString("compatibility_avf_status",outcome.name())
-                  .putString("compatibility_run_id",run)
-                  .putString("compatibility_history_v1",history)
-                  .putString("compatibility_execution_report",readable.toString());
-            for(int i=0;i<checks.length;i++)saved.putString("compatibility_result_"+i,checks[i]);
-            saved.apply();
-            if(shareResult) {
-               var memory=new android.app.ActivityManager.MemoryInfo();
-               this.getSystemService(android.app.ActivityManager.class).getMemoryInfo(memory);
-               var group=CompatibilityUpload.Group.forDevice(Build.MANUFACTURER,Build.MODEL,VERSION.SDK_INT,
-                     memory.totalMem,Runtime.getRuntime().availableProcessors());
-               this.uploadCompatibilityReport(run,group,outcome.name(),checks,this.releaseVersionLabel(),
-                     VERSION.RELEASE,guestMemoryBytes);
-            }
-         } finally {
-            VmLifecycle.endCompatibilityProbe();
-            this.runOnUiThread(this::finishCompatibilityCheck);
-         }
+         VmLifecycle.endCompatibilityProbe();
+         this.runOnUiThread(this::finishCompatibilityCheck);
       }
+   }
+
+   private void shareCompatibilityResult(CompatibilityAudit.Result result) {
+      var memory = new android.app.ActivityManager.MemoryInfo();
+      this.getSystemService(android.app.ActivityManager.class).getMemoryInfo(memory);
+      var group = CompatibilityUpload.Group.forDevice(Build.MANUFACTURER, Build.MODEL, VERSION.SDK_INT,
+            memory.totalMem, Runtime.getRuntime().availableProcessors());
+      this.uploadCompatibilityReport(result.id(), group, result.status().name(), result.checks(),
+            this.releaseVersionLabel(), VERSION.RELEASE, result.guestMemoryBytes());
    }
 
    private void finishCompatibilityCheck() {
       if(this.activityDestroyed)return;
       this.compatibilityRunning=false;
       this.readCompatibilityResult();
-      this.appendDiagnosticEvent("Check","Event","Compatibility result: "+this.compatibilityStatus);
+      this.diagnostics.append("Check","Event","Compatibility result: "+this.compatibilityStatus);
       if(this.productScreen==ProductScreen.COMPATIBILITY) {
          this.renderProductScreen(ProductScreen.COMPATIBILITY);
       }
@@ -3047,7 +2635,7 @@ public final class MainActivity extends Activity {
 
    private void readCompatibilityResult() {
       var preferences=this.getPreferences(0);
-      boolean current=preferences.getInt("compatibility_check_schema",0)==COMPATIBILITY_SCHEMA
+      boolean current=preferences.getInt("compatibility_check_schema",0)==CompatibilityAudit.SCHEMA
             && Build.FINGERPRINT.equals(preferences.getString("compatibility_checked_build",""));
       this.compatibilityStatus=AvfCompatibilityProbe.Status.INSUFFICIENT_DATA;
       if(current) {
@@ -3068,89 +2656,10 @@ public final class MainActivity extends Activity {
       else this.finishCompatibilityCheck();
    }
 
-   private void verifyBundledAsset(String var1, long var2, String var4) throws Exception {
-      MessageDigest var5 = MessageDigest.getInstance("SHA-256");
-      long var6 = 0L;
-      InputStream var8 = this.getAssets().open(var1);
-
-      try {
-         byte[] var9 = new byte[1048576];
-
-         int var10;
-         while((var10 = var8.read(var9)) >= 0) {
-            if (var10 != 0) {
-               var6 += (long)var10;
-               var5.update(var9, 0, var10);
-            }
-         }
-      } catch (Throwable var12) {
-         if (var8 != null) {
-            try {
-               var8.close();
-            } catch (Throwable var11) {
-               var12.addSuppressed(var11);
-            }
-         }
-
-         throw var12;
-      }
-
-      if (var8 != null) {
-         var8.close();
-      }
-
-      if (var6 != var2 || !var4.equals(Digest.hex(var5.digest()))) {
-         throw new SecurityException("Bundled platform asset failed verification: " + var1);
-      }
-   }
-
    private void refreshUbuntuIsoStatus() {
       if (this.ubuntuIsoStatus != null) {
-         File var1 = new File(this.getExternalFilesDir((String)null), "ubuntu-24.04.5-desktop-arm64.iso");
-         boolean var2 = var1.isFile() && var1.length() == 3967463424L;
-         this.ubuntuIsoStatus.setText(var2 ? "Official Ubuntu 24.04.5 selected · U-AVF can prepare a live session" : "No supported Ubuntu image selected yet.");
+         this.ubuntuIsoStatus.setText(this.isoPresent() ? "Official Ubuntu 24.04.5 selected · U-AVF can prepare a live session" : "No supported Ubuntu image selected yet.");
       }
-   }
-
-   private String sha256Uri(Uri var1) throws Exception {
-      MessageDigest var2 = MessageDigest.getInstance("SHA-256");
-      BufferedInputStream var3 = new BufferedInputStream(this.getContentResolver().openInputStream(var1));
-
-      try {
-         if (var3 == null) {
-            throw new IllegalStateException("Could not read the selected file");
-         }
-
-         byte[] var4 = new byte[1048576];
-         long var5 = 0L;
-
-         int var7;
-         while((var7 = ((InputStream)var3).read(var4)) >= 0) {
-            if (var7 != 0) {
-               var5 += (long)var7;
-               if (var5 > 3967463424L) {
-                  throw new IllegalArgumentException("Selected image is too large");
-               }
-
-               var2.update(var4, 0, var7);
-            }
-         }
-
-         if (var5 != 3967463424L) {
-            throw new IllegalArgumentException("Selected image has the wrong size");
-         }
-      } catch (Throwable var9) {
-         try {
-            ((InputStream)var3).close();
-         } catch (Throwable var8) {
-            var9.addSuppressed(var8);
-         }
-
-         throw var9;
-      }
-
-      ((InputStream)var3).close();
-      return Digest.hex(var2.digest());
    }
 
    private Button button(String var1) {
@@ -3372,194 +2881,139 @@ public final class MainActivity extends Activity {
       return this.skipDiskValidation() ? "SKIPPED_BY_USER" : Digest.hex(Digest.sha256File(var1));
    }
 
-   public void onNewIntent(Intent var1) {
-      super.onNewIntent(var1);
-      this.setIntent(var1);
-      Log.i("UAVF-H264","New intent: encoded=" + var1.getBooleanExtra("encoded_display_probe",false));
-      this.handleIntentActions(var1);
+   @Override public void onNewIntent(Intent intent) {
+      super.onNewIntent(intent);
+      this.setIntent(intent);
+      Log.i("UAVF-H264", "New intent: encoded=" + intent.getBooleanExtra("encoded_display_probe", false));
+      this.handleIntentActions(intent);
    }
 
-   private void handleIntentActions(Intent var1) {
-      // Release builds accept normal launcher navigation, not exported test commands.
-      if ((this.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0) {
-         var1.replaceExtras((Bundle)null);
+   private void handleIntentActions(Intent intent) {
+      // Only debug builds expose the historical test actions.
+      if ((this.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
+         intent.replaceExtras((Bundle) null);
          return;
       }
-      if(var1.getBooleanExtra("show_welcome",false)) {
+      if (debugAction(intent, "show_welcome")) {
          this.renderProductScreen(ProductScreen.ONBOARDING);
-         var1.removeExtra("show_welcome");
+         intent.removeExtra("show_welcome");
       }
-      if (var1.getBooleanExtra("encoded_display_probe", false)) {
-         Log.i("UAVF-H264","Probe request: vm=" + (this.encodedDisplayVm != null) + " running=" + this.isManagedVmRunning() + " lifecycle=" + this.lifecycle.state());
-         if (this.encodedDisplayVm == null || !this.isManagedVmRunning()) {
-            this.show("Start installed Ubuntu before the isolated encoded display proof.");
-         } else {
-            final int probeGeneration = ++this.encodedProbeGeneration;
-            if (this.encodedDisplayProbe != null) this.encodedDisplayProbe.close();
-            final Object probeVm = this.encodedDisplayVm;
-            this.displayConnection.begin();
-            this.encodedDisplayProbe = new EncodedDisplayProbe(this, probeVm,
-                  var1.getIntExtra("encoded_display_refresh_hz", 60), () -> {
-               if (probeGeneration == this.encodedProbeGeneration && this.isManagedVmRunning()) this.startUbuntuFrameBridge(probeVm);
-            });
-            this.encodedDisplayProbe.show();
-         }
-      }
-      if (var1.getBooleanExtra("start", false)) {
-         (new Thread(this::startTest, "WinAVF-start")).start();
-      }
+      if (debugAction(intent, "encoded_display_probe")) this.openEncodedDisplayProof(intent);
+      this.handleDebugBootActions(intent);
+      this.handleDebugGraphicsActions(intent);
+      this.handleDebugStorageAndGuestActions(intent);
+   }
 
-      if (var1.getBooleanExtra("ubuntu_gnome", false)) {
-         (new Thread(() -> this.startUbuntuGnome(false, false), "WinAVF-ubuntu-gnome")).start();
-      }
-
-      if (var1.getBooleanExtra("ubuntu_gnome_frame", false)) {
-         (new Thread(() -> this.startUbuntuGnome(false, true), "WinAVF-ubuntu-gnome-frame")).start();
-      }
-
-      if (var1.getBooleanExtra("ubuntu_gnome_queue_depth_1", false)) {
-         (new Thread(() -> this.startUbuntuGnome(true), "WinAVF-ubuntu-gnome-q1")).start();
-      }
-
-      if (var1.getBooleanExtra("v12_recovery", false)) {
+   private void handleDebugBootActions(Intent intent) {
+      debugWorker(intent, "start", "WinAVF-start", this::startTest);
+      debugWorker(intent, "ubuntu_gnome", "WinAVF-ubuntu-gnome", () -> this.startUbuntuGnome(false, false));
+      debugWorker(intent, "ubuntu_gnome_frame", "WinAVF-ubuntu-gnome-frame", () -> this.startUbuntuGnome(false, true));
+      debugWorker(intent, "ubuntu_gnome_queue_depth_1", "WinAVF-ubuntu-gnome-q1", () -> this.startUbuntuGnome(true));
+      if (debugAction(intent, "v12_recovery")) {
          Log.e("WinAVF", "V12_INTENT_RECEIVED");
          Log.e("WinAVF", "V12_PROFILE_SELECTED");
-         (new Thread(this::startV12Recovery, "WinAVF-v12-recovery")).start();
+         new Thread(this::startV12Recovery, "WinAVF-v12-recovery").start();
       }
-
-      if (var1.getBooleanExtra("generic_ubuntu", false)) {
-         (new Thread(() -> this.startGenericUbuntu(true, false, false), "WinAVF-generic-ubuntu")).start();
+      debugWorker(intent, "generic_ubuntu", "WinAVF-generic-ubuntu", () -> this.startGenericUbuntu(true, false, false));
+      debugWorker(intent, "generic_ubuntu_no_iso", "WinAVF-generic-ubuntu-no-iso",
+            () -> this.startGenericUbuntu(false, false, false));
+      debugWorker(intent, "generic_ubuntu_second_esp", "WinAVF-generic-ubuntu-second-esp",
+            () -> this.startGenericUbuntu(false, true, false));
+      debugWorker(intent, "generic_ubuntu_combined", "WinAVF-generic-ubuntu-combined",
+            () -> this.startGenericUbuntu(false, false, true));
+      if (debugAction(intent, "generic_ubuntu_frame_bridge_test")) {
+         if (!this.isManagedVmRunning()) this.selectProfile(LaunchProfile.LINUX);
+         new Thread(this::startUbuntuLive, "WinAVF-generic-frame-bridge-test").start();
       }
-
-      if (var1.getBooleanExtra("generic_ubuntu_no_iso", false)) {
-         (new Thread(() -> this.startGenericUbuntu(false, false, false), "WinAVF-generic-ubuntu-no-iso")).start();
+      if (debugAction(intent, "stop_frame_bridge_test")) {
+         this.selectedProfile = LaunchProfile.LINUX;
+         new Thread(this::stopSelectedProfile, "WinAVF-stop-frame-bridge-test").start();
       }
+   }
 
-      if (var1.getBooleanExtra("generic_ubuntu_second_esp", false)) {
-         (new Thread(() -> this.startGenericUbuntu(false, true, false), "WinAVF-generic-ubuntu-second-esp")).start();
+   private void handleDebugGraphicsActions(Intent intent) {
+      if (debugAction(intent, "linux_gpu_virgl_gbm_test")) {
+         this.startDebugVirgl(LiveProfile.VIRGL, "WinAVF-linux-virgl-gbm-test");
       }
-
-      if (var1.getBooleanExtra("generic_ubuntu_combined", false)) {
-         (new Thread(() -> this.startGenericUbuntu(false, false, true), "WinAVF-generic-ubuntu-combined")).start();
+      if (debugAction(intent, "linux_gpu_virgl_gbm_linux_first_test")) {
+         this.startDebugVirgl(LiveProfile.VIRGL_LINUX_FIRST, "WinAVF-linux-virgl-gbm-linux-first-test");
       }
-
-      if (var1.getBooleanExtra("generic_ubuntu_frame_bridge_test", false)) {
-         if(!this.isManagedVmRunning()) this.selectProfile(LaunchProfile.LINUX);
-         (new Thread(this::startUbuntuLive, "WinAVF-generic-frame-bridge-test")).start();
+      debugWorker(intent, "linux_first_gpu_test", "WinAVF-linux-first-gpu-test",
+            () -> this.startUbuntuLive(LiveProfile.GFXSTREAM));
+      debugWorker(intent, "linux_first_gpu_no_udmabuf_test", "WinAVF-linux-first-gpu-no-udmabuf",
+            () -> this.startUbuntuLive(LiveProfile.GFXSTREAM_NO_UDMABUF));
+      if (debugAction(intent, "linux_first_gpu_system_blob_test")) {
+         this.getPreferences(0).edit().putBoolean("linux_gpu_gfxstream_vk_hostmem_experimental", true)
+               .putBoolean("linux_gpu_gfxstream_system_blob_experimental", true)
+               .putBoolean("linux_gpu_virgl_gbm_xvnc_experimental", false).apply();
+         this.selectedProfile = LaunchProfile.LINUX;
+         new Thread(() -> this.startUbuntuLive(LiveProfile.GFXSTREAM), "WinAVF-linux-first-gpu-system-blob").start();
       }
+      debugWorker(intent, "linux_first_gpu_virgl_test", "WinAVF-linux-first-gpu-virgl",
+            () -> this.startUbuntuLive(LiveProfile.GFXSTREAM_VIRGL));
+      debugWorker(intent, "retry_frame_bridge_test", "WinAVF-frame-bridge-retry", this::retryFrameBridgeTest);
+   }
 
-      if (var1.getBooleanExtra("stop_frame_bridge_test", false)) {
-         this.selectedProfile = MainActivity.LaunchProfile.LINUX;
-         (new Thread(this::stopSelectedProfile, "WinAVF-stop-frame-bridge-test")).start();
+   private void startDebugVirgl(LiveProfile profile, String workerName) {
+      var preferences = this.getPreferences(0).edit().putBoolean("linux_gpu_virgl_gbm_xvnc_experimental", true)
+            .putBoolean("linux_gpu_virgl_experimental", false)
+            .putBoolean("linux_gpu_gfxstream_vk_hostmem_experimental", false);
+      if (profile == LiveProfile.VIRGL_LINUX_FIRST) {
+         preferences.putBoolean("linux_gpu_gfxstream_system_blob_experimental", false);
       }
+      preferences.apply();
+      this.selectedProfile = LaunchProfile.LINUX;
+      new Thread(() -> this.startUbuntuLive(profile), workerName).start();
+   }
 
-      if (var1.getBooleanExtra("linux_gpu_virgl_gbm_test", false)) {
-         this.getPreferences(0).edit().putBoolean("linux_gpu_virgl_gbm_xvnc_experimental", true).putBoolean("linux_gpu_virgl_experimental", false).putBoolean("linux_gpu_gfxstream_vk_hostmem_experimental", false).apply();
-         this.selectedProfile = MainActivity.LaunchProfile.LINUX;
-         (new Thread(() -> this.startUbuntuLive(LiveProfile.VIRGL), "WinAVF-linux-virgl-gbm-test")).start();
+   private void handleDebugStorageAndGuestActions(Intent intent) {
+      debugWorker(intent, "ubuntu_gnome_cleanup", "WinAVF-ubuntu-gnome-cleanup", this::cleanupUbuntuGnome);
+      debugWorker(intent, "v22_ext4_control", "WinAVF-v22-ext4-control", this::startV22Ext4Control);
+      debugWorker(intent, "v23_ext4_block_io", "WinAVF-v23-ext4-block-io", this::startV23Ext4BlockIo);
+      debugWorker(intent, "uefi_input_probe", "WinAVF-uefi-input", this::startUefiInputProbe);
+      debugWorker(intent, "uefi_serial_escape_probe", "WinAVF-uefi-serial-escape", this::startUefiSerialEscapeProbe);
+      debugWorker(intent, "vsock_hello_probe", "WinAVF-vsock-hello", this::startVsockHelloProbe);
+      debugWorker(intent, "rollback", "WinAVF-rollback", this::rollbackLastPatch);
+      debugWorker(intent, "audit", "WinAVF-audit", this::auditVirtualizationCapabilities);
+      if (debugAction(intent, "synthetic_frame")) this.emitSyntheticFrameForSurfaceAudit();
+      debugWorker(intent, "display_host_audit", "WinAVF-display-audit", this::auditNativeAvfDisplayAccess);
+      debugWorker(intent, "console_input_api_probe", "WinAVF-console-input-api", this::probeConsoleInputApi);
+      debugWorker(intent, "console_binary_loopback", "WinAVF-console-binary-loopback", this.consoleLoopback::run);
+      debugWorker(intent, "cleanup_console_binary_loopback", "WinAVF-console-binary-cleanup", this.consoleLoopback::cleanup);
+      if (debugAction(intent, "kd_bridge")) {
+         String token = intent.getStringExtra("kd_token");
+         new Thread(() -> this.startProductKdBridge(token), "WinAVF-product-kd-bridge").start();
       }
+      debugWorker(intent, "kd_bridge_stop", "WinAVF-product-kd-stop", this::stopProductKdBridge);
+      debugWorker(intent, "export_product_bcd", "WinAVF-product-bcd-audit", this::exportProductBcdReadOnly);
+      debugWorker(intent, "persistent_witness_audit", "WinAVF-persistent-witness-audit", this::auditPersistentBootWitness);
+      debugWorker(intent, "persistent_witness_cleanup", "WinAVF-persistent-witness-cleanup", this::cleanupPersistentBootWitness);
+   }
 
-      if (var1.getBooleanExtra("linux_gpu_virgl_gbm_linux_first_test", false)) {
-         this.getPreferences(0).edit().putBoolean("linux_gpu_virgl_gbm_xvnc_experimental", true).putBoolean("linux_gpu_virgl_experimental", false).putBoolean("linux_gpu_gfxstream_vk_hostmem_experimental", false).putBoolean("linux_gpu_gfxstream_system_blob_experimental", false).apply();
-         this.selectedProfile = MainActivity.LaunchProfile.LINUX;
-         (new Thread(() -> this.startUbuntuLive(LiveProfile.VIRGL_LINUX_FIRST), "WinAVF-linux-virgl-gbm-linux-first-test")).start();
+   private void openEncodedDisplayProof(Intent intent) {
+      Log.i("UAVF-H264", "Probe request: vm=" + (this.encodedDisplayVm != null)
+            + " running=" + this.isManagedVmRunning() + " lifecycle=" + this.lifecycle.state());
+      if (this.encodedDisplayVm == null || !this.isManagedVmRunning()) {
+         this.show("Start installed Ubuntu before the isolated encoded display proof.");
+         return;
       }
+      int generation = ++this.encodedProbeGeneration;
+      if (this.encodedDisplayProbe != null) this.encodedDisplayProbe.close();
+      Object vm = this.encodedDisplayVm;
+      this.displayConnection.begin();
+      this.encodedDisplayProbe = new EncodedDisplayProbe(this, vm,
+            intent.getIntExtra("encoded_display_refresh_hz", 60), () -> {
+               if (generation == this.encodedProbeGeneration && this.isManagedVmRunning()) this.startUbuntuFrameBridge(vm);
+            });
+      this.encodedDisplayProbe.show();
+   }
 
-      if (var1.getBooleanExtra("linux_first_gpu_test", false)) {
-         (new Thread(() -> this.startUbuntuLive(LiveProfile.GFXSTREAM), "WinAVF-linux-first-gpu-test")).start();
-      }
+   private static boolean debugAction(Intent intent, String action) {
+      return intent.getBooleanExtra(action, false);
+   }
 
-      if (var1.getBooleanExtra("linux_first_gpu_no_udmabuf_test", false)) {
-         (new Thread(() -> this.startUbuntuLive(LiveProfile.GFXSTREAM_NO_UDMABUF), "WinAVF-linux-first-gpu-no-udmabuf")).start();
-      }
-
-      if (var1.getBooleanExtra("linux_first_gpu_system_blob_test", false)) {
-         this.getPreferences(0).edit().putBoolean("linux_gpu_gfxstream_vk_hostmem_experimental", true).putBoolean("linux_gpu_gfxstream_system_blob_experimental", true).putBoolean("linux_gpu_virgl_gbm_xvnc_experimental", false).apply();
-         this.selectedProfile = MainActivity.LaunchProfile.LINUX;
-         (new Thread(() -> this.startUbuntuLive(LiveProfile.GFXSTREAM), "WinAVF-linux-first-gpu-system-blob")).start();
-      }
-
-      if (var1.getBooleanExtra("linux_first_gpu_virgl_test", false)) {
-         (new Thread(() -> this.startUbuntuLive(LiveProfile.GFXSTREAM_VIRGL), "WinAVF-linux-first-gpu-virgl")).start();
-      }
-
-      if (var1.getBooleanExtra("retry_frame_bridge_test", false)) {
-         (new Thread(this::retryFrameBridgeTest, "WinAVF-frame-bridge-retry")).start();
-      }
-
-      if (var1.getBooleanExtra("ubuntu_gnome_cleanup", false)) {
-         (new Thread(this::cleanupUbuntuGnome, "WinAVF-ubuntu-gnome-cleanup")).start();
-      }
-
-      if (var1.getBooleanExtra("v22_ext4_control", false)) {
-         (new Thread(this::startV22Ext4Control, "WinAVF-v22-ext4-control")).start();
-      }
-
-      if (var1.getBooleanExtra("v23_ext4_block_io", false)) {
-         (new Thread(this::startV23Ext4BlockIo, "WinAVF-v23-ext4-block-io")).start();
-      }
-
-      if (var1.getBooleanExtra("uefi_input_probe", false)) {
-         (new Thread(this::startUefiInputProbe, "WinAVF-uefi-input")).start();
-      }
-
-      if (var1.getBooleanExtra("uefi_serial_escape_probe", false)) {
-         (new Thread(this::startUefiSerialEscapeProbe, "WinAVF-uefi-serial-escape")).start();
-      }
-
-      if (var1.getBooleanExtra("vsock_hello_probe", false)) {
-         (new Thread(this::startVsockHelloProbe, "WinAVF-vsock-hello")).start();
-      }
-
-      if (var1.getBooleanExtra("rollback", false)) {
-         (new Thread(this::rollbackLastPatch, "WinAVF-rollback")).start();
-      }
-
-      if (var1.getBooleanExtra("audit", false)) {
-         (new Thread(this::auditVirtualizationCapabilities, "WinAVF-audit")).start();
-      }
-
-      if (var1.getBooleanExtra("synthetic_frame", false)) {
-         this.emitSyntheticFrameForSurfaceAudit();
-      }
-
-      if (var1.getBooleanExtra("display_host_audit", false)) {
-         (new Thread(this::auditNativeAvfDisplayAccess, "WinAVF-display-audit")).start();
-      }
-
-      if (var1.getBooleanExtra("console_input_api_probe", false)) {
-         (new Thread(this::probeConsoleInputApi, "WinAVF-console-input-api")).start();
-      }
-
-      if (var1.getBooleanExtra("console_binary_loopback", false)) {
-         (new Thread(this::probeConsoleBinaryLoopback, "WinAVF-console-binary-loopback")).start();
-      }
-
-      if (var1.getBooleanExtra("cleanup_console_binary_loopback", false)) {
-         (new Thread(this::cleanupConsoleBinaryLoopback, "WinAVF-console-binary-cleanup")).start();
-      }
-
-      if (var1.getBooleanExtra("kd_bridge", false)) {
-         String var2 = var1.getStringExtra("kd_token");
-         (new Thread(() -> this.startProductKdBridge(var2), "WinAVF-product-kd-bridge")).start();
-      }
-
-      if (var1.getBooleanExtra("kd_bridge_stop", false)) {
-         (new Thread(this::stopProductKdBridge, "WinAVF-product-kd-stop")).start();
-      }
-
-      if (var1.getBooleanExtra("export_product_bcd", false)) {
-         (new Thread(this::exportProductBcdReadOnly, "WinAVF-product-bcd-audit")).start();
-      }
-
-      if (var1.getBooleanExtra("persistent_witness_audit", false)) {
-         (new Thread(this::auditPersistentBootWitness, "WinAVF-persistent-witness-audit")).start();
-      }
-
-      if (var1.getBooleanExtra("persistent_witness_cleanup", false)) {
-         (new Thread(this::cleanupPersistentBootWitness, "WinAVF-persistent-witness-cleanup")).start();
-      }
-
+   private static void debugWorker(Intent intent, String action, String threadName, Runnable worker) {
+      if (debugAction(intent, action)) new Thread(worker, threadName).start();
    }
 
    private void emitSyntheticFrameForSurfaceAudit() {
@@ -3733,7 +3187,7 @@ public final class MainActivity extends Activity {
                throw new IllegalStateException("Cannot create payload directory");
             }
 
-            File var9 = this.copyAsset("u-boot-wrapper-v24.Image", new File(var8, "u-boot-wrapper-v24.Image"), -1L);
+            File var9 = this.guestMediaFiles.copyAsset("u-boot-wrapper-v24.Image", new File(var8, "u-boot-wrapper-v24.Image"), -1L);
             Class var10 = Class.forName("android.system.virtualmachine.VirtualMachineCustomImageConfig");
             Class var11 = Class.forName(var10.getName() + "$Builder");
             Object var12 = var11.getConstructor().newInstance();
@@ -3812,223 +3266,6 @@ public final class MainActivity extends Activity {
 
    }
 
-   private void probeConsoleBinaryLoopback() {
-      File var1 = new File(this.getExternalFilesDir((String)null), "console-binary-loopback-report.txt");
-      File var2 = new File(this.getExternalFilesDir((String)null), "console-binary-loopback.raw");
-      Object var3 = null;
-      Object var4 = null;
-      InputStream var5 = null;
-      OutputStream var6 = null;
-      Object var7 = new Object();
-      ByteArrayOutputStream var8 = new ByteArrayOutputStream();
-
-      try {
-         PrintWriter var62 = new PrintWriter(new FileOutputStream(var1, false));
-
-         try {
-            var62.println("scope=DISPOSABLE_NO_DISK_NO_WINDOWS_NO_PRODUCT_MEDIA");
-            byte[] var63 = new byte[4096];
-
-            for(int var11 = 0; var11 < var63.length; ++var11) {
-               var63[var11] = (byte)var11;
-            }
-
-            var62.println("patternBytes=" + var63.length);
-            var62.println("patternSha256=" + Digest.hex(Digest.sha256(var63)));
-            File var64 = new File(this.getFilesDir(), "payload");
-            if (!var64.exists() && !var64.mkdirs()) {
-               throw new IllegalStateException("Cannot create payload directory");
-            }
-
-            File var12 = this.copyAsset("console-binary-echo.Image", new File(var64, "console-binary-echo.Image"), -1L);
-            Object var13 = this.buildConsoleBinaryEchoConfig(var12);
-            if (!(Boolean)var13.getClass().getMethod("isVmConsoleInputSupported").invoke(var13)) {
-               throw new IllegalStateException("Console input was not persisted in loopback config");
-            }
-
-            Class var14 = Class.forName("android.system.virtualmachine.VirtualMachineManager");
-            var3 = this.getSystemService(var14);
-            Object var15 = var3.getClass().getMethod("get", String.class).invoke(var3, "winavf-console-binary-echo-20260909");
-            if (var15 != null) {
-               var3.getClass().getMethod("delete", String.class).invoke(var3, "winavf-console-binary-echo-20260909");
-            }
-
-            var4 = var3.getClass().getMethod("create", String.class, var13.getClass()).invoke(var3, "winavf-console-binary-echo-20260909", var13);
-            var5 = (InputStream)var4.getClass().getMethod("getConsoleOutput").invoke(var4);
-            var6 = (OutputStream)var4.getClass().getMethod("getConsoleInput").invoke(var4);
-            InputStream consoleReader = var5;
-            Thread var17 = new Thread(() -> {
-               byte[] buffer = new byte[512];
-
-               int count;
-               try {
-                  while((count = consoleReader.read(buffer)) >= 0) {
-                     synchronized(var7) {
-                        var8.write(buffer, 0, count);
-                        var7.notifyAll();
-                     }
-                  }
-               } catch (Throwable var8x) {
-               }
-
-            }, "WinAVF-console-binary-reader");
-            var17.setDaemon(true);
-            var17.start();
-            var4.getClass().getMethod("run").invoke(var4);
-            int var18 = IoUtil.waitForBytes(var8, var7, CONSOLE_BINARY_ECHO_READY, 8000L);
-            if (var18 < 0) {
-               throw new IllegalStateException("Guest readiness marker not observed");
-            }
-
-            var62.println("readyMarkerOffset=" + var18);
-            var6.write(var63);
-            var6.flush();
-            var62.println("patternTransmitted=true");
-            if (!IoUtil.waitForLength(var8, var7, var18 + CONSOLE_BINARY_ECHO_READY.length + var63.length, 8000L)) {
-               throw new IllegalStateException("Timed out waiting for echoed pattern");
-            }
-
-            byte[] var19;
-            synchronized(var7) {
-               var19 = var8.toByteArray();
-            }
-
-            byte[] var20 = Arrays.copyOfRange(var19, var18 + CONSOLE_BINARY_ECHO_READY.length, var18 + CONSOLE_BINARY_ECHO_READY.length + var63.length);
-            FileOutputStream var21 = new FileOutputStream(var2, false);
-
-            try {
-               var21.write(var19);
-            } catch (Throwable var57) {
-               try {
-                  var21.close();
-               } catch (Throwable var56) {
-                  var57.addSuppressed(var56);
-               }
-
-               throw var57;
-            }
-
-            var21.close();
-            var62.println("echoedBytes=" + var20.length);
-            var62.println("echoedSha256=" + Digest.hex(Digest.sha256(var20)));
-            boolean var10001 = Arrays.equals(var63, var20);
-            var62.println("byteExact=" + var10001);
-            if (!Arrays.equals(var63, var20)) {
-               throw new IllegalStateException("Echoed bytes differ from transmitted pattern");
-            }
-
-            var62.println("result=PASS");
-            this.show("Console binary loopback PASS: 4096/4096 exact.");
-         } catch (Throwable var59) {
-            try {
-               var62.close();
-            } catch (Throwable var55) {
-               var59.addSuppressed(var55);
-            }
-
-            throw var59;
-         }
-
-         var62.close();
-      } catch (Throwable var60) {
-         Throwable var9 = var60;
-
-         try {
-            PrintWriter var10 = new PrintWriter(new FileOutputStream(var1, true));
-
-            try {
-               var10.println("result=FAIL");
-               var10.println("error=" + rootMessage(var9));
-            } catch (Throwable var53) {
-               try {
-                  var10.close();
-               } catch (Throwable var52) {
-                  var53.addSuppressed(var52);
-               }
-
-               throw var53;
-            }
-
-            var10.close();
-         } catch (Throwable var54) {
-         }
-
-         this.show("Console binary loopback failed: " + rootMessage(var60));
-      } finally {
-         try {
-            if (var6 != null) {
-               var6.close();
-            }
-         } catch (Throwable var51) {
-         }
-
-         try {
-            if (var5 != null) {
-               var5.close();
-            }
-         } catch (Throwable var50) {
-         }
-
-         if (var4 != null) {
-            try {
-               var4.getClass().getMethod("stop").invoke(var4);
-            } catch (Throwable var49) {
-            }
-         }
-
-         if (var3 != null) {
-            try {
-               var3.getClass().getMethod("delete", String.class).invoke(var3, "winavf-console-binary-echo-20260909");
-            } catch (Throwable var48) {
-            }
-         }
-
-      }
-
-   }
-
-   private void cleanupConsoleBinaryLoopback() {
-      try {
-         Class var1 = Class.forName("android.system.virtualmachine.VirtualMachineManager");
-         Object var2 = this.getSystemService(var1);
-         Object var3 = var2.getClass().getMethod("get", String.class).invoke(var2, "winavf-console-binary-echo-20260909");
-         if (var3 != null) {
-            try {
-               var3.getClass().getMethod("stop").invoke(var3);
-            } catch (Throwable var5) {
-            }
-         }
-
-         var2.getClass().getMethod("delete", String.class).invoke(var2, "winavf-console-binary-echo-20260909");
-         this.show("Console binary loopback VM removed.");
-      } catch (Throwable var6) {
-         this.show("Console binary loopback cleanup failed: " + rootMessage(var6));
-      }
-
-   }
-
-   private Object buildConsoleBinaryEchoConfig(File var1) throws Exception {
-      Class var2 = Class.forName("android.system.virtualmachine.VirtualMachineCustomImageConfig");
-      Class var3 = Class.forName(var2.getName() + "$Builder");
-      Object var4 = var3.getConstructor().newInstance();
-      call(var4, "setName", String.class, "winavf-console-binary-echo-20260909");
-      call(var4, "setOsName", String.class, "winavf-console-binary-echo");
-      call(var4, "setKernelPath", String.class, var1.getAbsolutePath());
-      Object var5 = call(var4, "build");
-      Class var6 = Class.forName("android.system.virtualmachine.VirtualMachineConfig");
-      Class var7 = Class.forName(var6.getName() + "$Builder");
-      Object var8 = var7.getConstructor(Context.class).newInstance(this);
-      call(var8, "setProtectedVm", Boolean.TYPE, false);
-      call(var8, "setDebugLevel", Integer.TYPE, 1);
-      call(var8, "setCpuTopology", Integer.TYPE, var6.getField("CPU_TOPOLOGY_ONE_CPU").getInt((Object)null));
-      call(var8, "setMemoryBytes", Long.TYPE, 536870912L);
-      call(var8, "setConsoleInputDevice", String.class, "ttyS0");
-      call(var8, "setVmOutputCaptured", Boolean.TYPE, true);
-      call(var8, "setVmConsoleInputSupported", Boolean.TYPE, true);
-      call(var8, "setCustomImageConfig", var2, var5);
-      return call(var8, "build");
-   }
-
    private void startTest() {
       this.startTest(false, false, false);
    }
@@ -4058,7 +3295,7 @@ public final class MainActivity extends Activity {
             throw new IllegalStateException("Cannot create payload directory");
          }
 
-         File var5 = this.copyAsset("u-boot-wrapper-v24.Image", new File(var4, "u-boot-wrapper-v24.Image"), -1L);
+         File var5 = this.guestMediaFiles.copyAsset("u-boot-wrapper-v24.Image", new File(var4, "u-boot-wrapper-v24.Image"), -1L);
          File var6 = new File(var4, "u-boot-wrapper-start-marker.Image");
          if (var6.isFile()) {
             File var7 = new File(this.getExternalFilesDir((String)null), "initial-working-u-boot-wrapper.Image");
@@ -4127,11 +3364,12 @@ public final class MainActivity extends Activity {
          }
 
          if (var3) {
-            this.startSerialEscapeInputProbe(var12);
+            this.windowsBootProbes.startSerialEscape(var12, () -> this.bootOptionsPromptSeen,
+                  () -> this.serialEscapeAcknowledged, () -> this.observedFrameCount);
          }
 
          if (var2) {
-            this.startVsockHelloProbe(var12);
+            this.windowsBootProbes.startHello(var12);
          }
 
          this.startWinpeMarkerReporter(var21);
@@ -4155,7 +3393,7 @@ public final class MainActivity extends Activity {
             throw new IllegalStateException("Cannot create Ubuntu payload directory");
          }
 
-         File var4 = this.copyAsset("u-boot-wrapper-v24.Image", new File(var3, "u-boot-wrapper-v24.Image"), -1L);
+         File var4 = this.guestMediaFiles.copyAsset("u-boot-wrapper-v24.Image", new File(var3, "u-boot-wrapper-v24.Image"), -1L);
          File var5 = new File(var3, "ubuntu-gnome-24.04.5-v21-vsock-listener.img");
          if (var5.exists()) {
             this.requireDisk(var5, 9126805504L, "F3AAC176C600BFC3D3EA0BE5DA4EFF2F03DE7B27E3DED26A0E9D58D21B975FAB", "private Ubuntu medium");
@@ -4209,7 +3447,7 @@ public final class MainActivity extends Activity {
             throw new IllegalStateException("Cannot create V12 payload directory");
          }
 
-         File var12 = this.copyAsset("u-boot-wrapper-v24.Image", new File(var1, "u-boot-wrapper-v24.Image"), -1L);
+         File var12 = this.guestMediaFiles.copyAsset("u-boot-wrapper-v24.Image", new File(var1, "u-boot-wrapper-v24.Image"), -1L);
          File var3 = new File(this.getExternalFilesDir((String)null), "ubuntu-gnome-v12-recovery-candidate.img");
          this.requireDisk(var3, 9126805504L, "C9D80A9CABB14C6E1D0F4F3180923146E354CC916020FB55BB2608FDC3110EA8", "V12 recovery carrier");
          File var4 = new File(this.getExternalFilesDir((String)null), "ubuntu-gnome-v12-recovery-firmware.patch");
@@ -4266,19 +3504,22 @@ public final class MainActivity extends Activity {
          File var9 = var1 ? this.copyFile(var27, new File(var8, "ubuntu-24.04.5-desktop-arm64.iso"), this.checkedCopyLength(3967463424L), false) : var27;
          File var10 = var3 ? this.copyFile(var7, new File(var8, "generic-ubuntu-one-disk-journal-rplus.img"), this.checkedCopyLength(4102029312L), false) : this.copyFile(var28, new File(var8, "generic-ubuntu-platform-gpt.img"), this.checkedCopyLength(134217728L), false);
          File var11 = var2 ? this.copyFile(var28, new File(var8, "generic-ubuntu-second-esp-control.img"), this.checkedCopyLength(134217728L), false) : null;
-         File var12 = this.copyAsset("u-boot-wrapper-v24.Image", new File(var8, "u-boot-wrapper-v24.Image"), -1L);
-         Object var13 = this.buildGenericUbuntuConfig(var12, var10, var9, var11, var1);
+         File var12 = this.guestMediaFiles.copyAsset("u-boot-wrapper-v24.Image", new File(var8, "u-boot-wrapper-v24.Image"), -1L);
+         var media = new UbuntuVmConfig.Media(var12, var10, var1 ? var9 : null, var11);
+         var options = new UbuntuVmConfig.Options(UbuntuVmConfig.GENERIC_VM, 4L << 30,
+               "CPU_TOPOLOGY_ONE_CPU", 1280, 800, DisplaySettings.DEFAULT_REFRESH_HZ, false, false);
+         Object var13 = UbuntuVmConfig.build(this, this.getPreferences(0), this.getIntent(), media, options);
          Object var14 = this.getSystemService(Class.forName("android.system.virtualmachine.VirtualMachineManager"));
 
          try {
-            Object var15 = var14.getClass().getMethod("get", String.class).invoke(var14, "winavf-generic-ubuntu-24045");
+            Object var15 = var14.getClass().getMethod("get", String.class).invoke(var14, UbuntuVmConfig.GENERIC_VM);
             if (var15 != null) {
-               var14.getClass().getMethod("delete", String.class).invoke(var14, "winavf-generic-ubuntu-24045");
+               var14.getClass().getMethod("delete", String.class).invoke(var14, UbuntuVmConfig.GENERIC_VM);
             }
          } catch (Exception var25) {
          }
 
-         Object var29 = var14.getClass().getMethod("create", String.class, var13.getClass()).invoke(var14, "winavf-generic-ubuntu-24045", var13);
+         Object var29 = var14.getClass().getMethod("create", String.class, var13.getClass()).invoke(var14, UbuntuVmConfig.GENERIC_VM, var13);
          this.attachCallback(var29);
          InputStream var16 = (InputStream)var29.getClass().getMethod("getConsoleOutput").invoke(var29);
          this.startConsoleReader(var16, "generic-ubuntu-serial.log");
@@ -4415,9 +3656,9 @@ public final class MainActivity extends Activity {
          if (skipIsoDigest) this.show("Disk verification skipped for official Ubuntu ISO.");
          File disk = media.prepare(iso, staging, mediaProfile, skipIsoDigest);
          if (mavk) MavkLiveMedia.enable(this, staging, disk, mavkAssets);
-         File kernel = this.copyAsset("u-boot-wrapper-v24.Image", new File(staging, "u-boot-wrapper-v24.Image"), -1);
+         File kernel = this.guestMediaFiles.copyAsset("u-boot-wrapper-v24.Image", new File(staging, "u-boot-wrapper-v24.Image"), -1);
          int refreshHz = this.requestedUbuntuRefreshHz();
-         Object config = this.buildGenericUbuntuConfig(kernel, disk, null, null, false, AvfGuest.UBUNTU_VM,
+         Object config = this.buildWorkspaceUbuntuConfig(kernel, disk,
                profile.disableUdmabuf, profile.hostVirgl, mavk, refreshHz);
          File ready = new File(staging, "uavf-ubuntu-live-runtime.ready");
          if (ready.exists() && !ready.delete()) throw new IOException("Cannot invalidate temporary-media cache before launch");
@@ -4490,143 +3731,22 @@ public final class MainActivity extends Activity {
       }
    }
 
-   private Object buildGenericUbuntuConfig(File var1, File var2, File var3, File var4, boolean var5) throws Exception {
-      return this.buildGenericUbuntuConfig(var1, var2, var3, var4, var5, "winavf-generic-ubuntu-24045");
-   }
-
-   private Object buildGenericUbuntuConfig(File var1, File var2, File var3, File var4, boolean var5, String var6) throws Exception {
-      return this.buildGenericUbuntuConfig(var1, var2, var3, var4, var5, var6, false);
-   }
-
-   private Object buildGenericUbuntuConfig(File var1, File var2, File var3, File var4, boolean var5, String var6, boolean var7) throws Exception {
-      return this.buildGenericUbuntuConfig(var1, var2, var3, var4, var5, var6, var7, false);
-   }
-
-   private Object buildGenericUbuntuConfig(File var1, File var2, File var3, File var4, boolean var5, String var6, boolean var7, boolean var8) throws Exception {
-      return this.buildGenericUbuntuConfig(var1,var2,var3,var4,var5,var6,var7,var8,false);
-   }
-
-   private Object buildGenericUbuntuConfig(File var1, File var2, File var3, File var4, boolean var5, String var6, boolean var7, boolean var8, boolean mavkLive) throws Exception {
-      int refreshHz=AvfGuest.UBUNTU_VM.equals(var6)?this.requestedUbuntuRefreshHz():DisplaySettings.DEFAULT_REFRESH_HZ;
-      return this.buildGenericUbuntuConfig(var1,var2,var3,var4,var5,var6,var7,var8,mavkLive,refreshHz);
-   }
-
-   private Object buildGenericUbuntuConfig(File var1, File var2, File var3, File var4, boolean var5, String var6, boolean var7, boolean var8, boolean mavkLive, int guestRefreshHz) throws Exception {
-      Class var9 = Class.forName("android.system.virtualmachine.VirtualMachineCustomImageConfig");
-      Object var10 = Class.forName(var9.getName() + "$Builder").getConstructor().newInstance();
-      call(var10, "setName", String.class, var6);
-      call(var10, "setOsName", String.class, "ubuntu-24.04.5-stock");
-      call(var10, "setKernelPath", String.class, var1.getAbsolutePath());
-      boolean var11 = this.getPreferences(0).getBoolean("linux_internet_enabled", true);
-      boolean var12 = this.getPreferences(0).getBoolean("linux_audio_output_enabled", true);
-      call(var10, "useNetwork", Boolean.TYPE, var11);
-      if (var12 && this.getPreferences(0).getBoolean("linux_audio_avf_native_experimental", false)) {
-         Class var13 = Class.forName(var9.getName() + "$AudioConfig$Builder");
-         Object var14 = var13.getConstructor().newInstance();
-         call(var14, "setUseSpeaker", Boolean.TYPE, true);
-         call(var14, "setUseMicrophone", Boolean.TYPE, false);
-         Object var15 = call(var14, "build");
-         call(var10, "setAudioConfig", var15.getClass(), var15);
-      }
-
-      call(var10, "useAutoMemoryBalloon", Boolean.TYPE, false);
-      Class var24 = Class.forName(var9.getName() + "$Disk");
-      call(var10, "addDisk", var24, var24.getMethod("RWDisk", String.class).invoke((Object)null, var2.getAbsolutePath()));
-      if (var5) {
-         call(var10, "addDisk", var24, var24.getMethod("RODisk", String.class).invoke((Object)null, var3.getAbsolutePath()));
-      }
-
-      if (var4 != null) {
-         call(var10, "addDisk", var24, var24.getMethod("RODisk", String.class).invoke((Object)null, var4.getAbsolutePath()));
-      }
-
-      Class var25 = Class.forName(var9.getName() + "$DisplayConfig$Builder");
-      Object var26 = var25.getConstructor().newInstance();
-      WorkspaceConfig workspace=this.workspaceConfig();
-      boolean managedWorkspace="winavf-frame-bridge-test-ubuntu-24045".equals(var6);
+   private Object buildWorkspaceUbuntuConfig(File kernel, File disk, boolean disableUdmabuf,
+                                             boolean hostVirgl, boolean mavk, int refreshHz) throws Exception {
+      WorkspaceConfig workspace = this.workspaceConfig();
       DisplaySettings settings = this.displaySettings();
-      WorkspaceConfig display=mavkLive?this.displayConfig(Mode.MAVK):workspace;
-      if(!mavkLive && managedWorkspace && settings.encodedEnabled()
-            && settings.hasResolution(Mode.H264))display=this.displayConfig(Mode.H264);
-      call(var26, "setWidth", Integer.TYPE, managedWorkspace ? display.width : 1280);
-      call(var26, "setHeight", Integer.TYPE, managedWorkspace ? display.height : 800);
-      call(var26, "setHorizontalDpi", Integer.TYPE, 160);
-      call(var26, "setVerticalDpi", Integer.TYPE, 160);
-      call(var26, "setRefreshRate", Integer.TYPE, guestRefreshHz);
-      Log.i("UAVF-Display", "Guest virtual display refresh request=" + guestRefreshHz);
-      Object var16 = call(var26, "build");
-      call(var10, "setDisplayConfig", var16.getClass(), var16);
-      Class var17 = Class.forName(var9.getName() + "$GpuConfig$Builder");
-      Object var18 = var17.getConstructor().newInstance();
-      if (var8 && this.getIntent().getBooleanExtra("gfxstream_aligned_ring_probe", false)) {
-         // One transient memory-backing A/B; no persisted preference changes.
-         // Gfxstream ring blob id0 uses aligned process memory when ExternalBlob
-         // is disabled, instead of exporting a shared-memory descriptor.
-         call(var18, "setBackend", String.class, "gfxstream");
-         call(var18, "setRendererUseEgl", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGles", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGlx", Boolean.class, Boolean.FALSE);
-         call(var18, "setRendererUseSurfaceless", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseVulkan", Boolean.class, Boolean.TRUE);
-         call(var18, "setContextTypes", String[].class,
-            new String[]{"gfxstream-gles", "gfxstream-vulkan", "gfxstream-composer"});
-         call(var18, "setRendererFeatures", String.class, "ExternalBlob:disabled");
-      } else if (var8) {
-         // Explicit diagnostic-only A/B; ordinary launches remain VirGL2.
-         boolean venusProbe=this.getIntent().getBooleanExtra("venus_gpu_probe",false);
-         call(var18, "setBackend", String.class, "virglrenderer");
-         call(var18, "setRendererUseEgl", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGles", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGlx", Boolean.class, Boolean.FALSE);
-         call(var18, "setRendererUseSurfaceless", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseVulkan", Boolean.class, Boolean.valueOf(venusProbe));
-         call(var18, "setContextTypes", String[].class, venusProbe ?
-            new String[]{"virgl2","venus"} : new String[]{"virgl2"});
-      } else if (this.getPreferences(0).getBoolean("linux_gpu_gfxstream_vk_hostmem_experimental", false)) {
-         call(var18, "setBackend", String.class, "gfxstream");
-         call(var18, "setRendererUseEgl", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGles", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGlx", Boolean.class, Boolean.FALSE);
-         call(var18, "setRendererUseSurfaceless", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseVulkan", Boolean.class, Boolean.TRUE);
-         call(var18, "setContextTypes", String[].class, new String[]{"gfxstream-gles", "gfxstream-vulkan", "gfxstream-composer"});
-         String var19 = this.getPreferences(0).getBoolean("linux_gpu_gfxstream_system_blob_experimental", false) ? "SystemBlob:enabled" : (var7 ? "VulkanAllocateHostVisibleAsUdmabuf:disabled" : "VulkanAllocateHostMemory:enabled");
-         call(var18, "setRendererFeatures", String.class, var19);
-      } else if (this.getPreferences(0).getBoolean("linux_gpu_gfxstream_vulkan_experimental", false)) {
-         call(var18, "setBackend", String.class, "gfxstream");
-         call(var18, "setRendererUseEgl", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGles", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGlx", Boolean.class, Boolean.FALSE);
-         call(var18, "setRendererUseSurfaceless", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseVulkan", Boolean.class, Boolean.FALSE);
-         call(var18, "setContextTypes", String[].class, new String[]{"gfxstream-gles"});
-      } else if (this.getPreferences(0).getBoolean("linux_gpu_virgl_experimental", false)) {
-         call(var18, "setBackend", String.class, "virglrenderer");
-         call(var18, "setRendererUseEgl", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGles", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseGlx", Boolean.class, Boolean.FALSE);
-         call(var18, "setRendererUseSurfaceless", Boolean.class, Boolean.TRUE);
-         call(var18, "setRendererUseVulkan", Boolean.class, Boolean.FALSE);
-         call(var18, "setContextTypes", String[].class, new String[]{"virgl2"});
+      WorkspaceConfig display = workspace;
+      if (mavk) display = this.displayConfig(Mode.MAVK);
+      else if (settings.encodedEnabled() && settings.hasResolution(Mode.H264)) {
+         display = this.displayConfig(Mode.H264);
       }
-
-      Object var27 = call(var18, "build");
-      call(var10, "setGpuConfig", var27.getClass(), var27);
-      Object var20 = call(var10, "build");
-      Class var21 = Class.forName("android.system.virtualmachine.VirtualMachineConfig");
-      String var10000 = var21.getName();
-      Object var22 = Class.forName(var10000 + "$Builder").getConstructor(Context.class).newInstance(this);
-      call(var22, "setProtectedVm", Boolean.TYPE, false);
-      call(var22, "setMemoryBytes", Long.TYPE, managedWorkspace ? workspace.memoryBytes() : 4294967296L);
-      String var23 = managedWorkspace ? workspace.topology() : "CPU_TOPOLOGY_ONE_CPU";
-      call(var22, "setCpuTopology", Integer.TYPE, var21.getField(var23).getInt((Object)null));
-      call(var22, "setDebugLevel", Integer.TYPE, 1);
-      call(var22, "setConsoleInputDevice", String.class, "ttyS0");
-      call(var22, "setVmOutputCaptured", Boolean.TYPE, true);
-      call(var22, "setVmConsoleInputSupported", Boolean.TYPE, true);
-      call(var22, "setCustomImageConfig", var9, var20);
-      if(managedWorkspace) this.appendUbuntuInstallerAutostartReport("EFFECTIVE_LAUNCH_CONFIG RAM_BYTES="+workspace.memoryBytes()+" CPU="+workspace.topology()+" DISPLAY="+workspace.resolution()+" AUTO_BALLOON=false");
-      return call(var22, "build");
+      var media = new UbuntuVmConfig.Media(kernel, disk, null, null);
+      var options = new UbuntuVmConfig.Options(AvfGuest.UBUNTU_VM, workspace.memoryBytes(),
+            workspace.topology(), display.width, display.height, refreshHz, disableUdmabuf, hostVirgl);
+      Object config = UbuntuVmConfig.build(this, this.getPreferences(0), this.getIntent(), media, options);
+      this.appendUbuntuInstallerAutostartReport("EFFECTIVE_LAUNCH_CONFIG RAM_BYTES=" + workspace.memoryBytes()
+            + " CPU=" + workspace.topology() + " DISPLAY=" + workspace.resolution() + " AUTO_BALLOON=false");
+      return config;
    }
 
    private void startV22Ext4Control() {
@@ -4898,7 +4018,7 @@ public final class MainActivity extends Activity {
                      throw new IllegalStateException("Cannot create payload directory");
                   }
 
-                  File var8 = this.copyAsset("u-boot-wrapper-v24.Image", new File(var7, "u-boot-wrapper-v24.Image"), -1L);
+                  File var8 = this.guestMediaFiles.copyAsset("u-boot-wrapper-v24.Image", new File(var7, "u-boot-wrapper-v24.Image"), -1L);
                   File var9 = new File(this.getExternalFilesDir((String)null), "win11-gop-ebs-r1.img");
                   if (!var9.isFile() || var9.length() != 9126805504L) {
                      throw new IllegalStateException("Missing compact headless boot medium: " + String.valueOf(var9));
@@ -5162,259 +4282,21 @@ public final class MainActivity extends Activity {
 
    }
 
-   private void startVsockHelloProbe(Object var1) {
-      (new Thread(() -> {
-         File var2 = new File(this.getExternalFilesDir((String)null), "vsock-hello-probe-report.txt");
-
-         try {
-            PrintWriter var3 = new PrintWriter(new FileOutputStream(var2, false));
-
-            label192: {
-               try {
-                  var3.println("transport=AVF_CONNECT_VSOCK");
-                  var3.println("port=4050");
-                  Throwable var4 = null;
-                  int var5 = 1;
-
-                  while(true) {
-                     if (var5 > 60) {
-                        var3.println("result=VSOCK_HELLO_NOT_OBSERVED");
-                        String var10001 = var4 == null ? "none" : rootMessage(var4);
-                        var3.println("lastError=" + var10001);
-                        this.show("VSOCK HELLO was not observed.");
-                        break label192;
-                     }
-
-                     try {
-                        Method var6 = var1.getClass().getMethod("connectVsock", Long.TYPE);
-                        ParcelFileDescriptor var7 = (ParcelFileDescriptor)var6.invoke(var1, 4050L);
-
-                        try {
-                           FileInputStream var8 = new FileInputStream(var7.getFileDescriptor());
-
-                           try {
-                              byte[] var9 = new byte[16];
-
-                              int var11;
-                              for(int var10 = 0; var10 < var9.length; var10 += var11) {
-                                 var11 = var8.read(var9, var10, var9.length - var10);
-                                 if (var11 < 0) {
-                                    throw new IllegalStateException("short WVH1 reply");
-                                 }
-                              }
-
-                              if (var9[0] != 87 || var9[1] != 86 || var9[2] != 72 || var9[3] != 49) {
-                                 throw new IllegalStateException("unexpected vsock hello magic");
-                              }
-
-                              long var30 = (long)var9[8] & 255L | ((long)var9[9] & 255L) << 8 | ((long)var9[10] & 255L) << 16 | ((long)var9[11] & 255L) << 24;
-                              long var13 = (long)var9[12] & 255L | ((long)var9[13] & 255L) << 8 | ((long)var9[14] & 255L) << 16 | ((long)var9[15] & 255L) << 24;
-                              var3.println("attempt=" + var5);
-                              var3.println("hello=WVH1");
-                              var3.println("agentStatus=" + var30);
-                              var3.println("capabilities=" + var13);
-                              var3.println("result=VSOCK_HELLO_PASS");
-                              this.show("VSOCK HELLO received from WinPE agent.");
-                           } catch (Throwable var25) {
-                              try {
-                                 var8.close();
-                              } catch (Throwable var24) {
-                                 var25.addSuppressed(var24);
-                              }
-
-                              throw var25;
-                           }
-
-                           var8.close();
-                           break;
-                        } finally {
-                           var7.close();
-                        }
-                     } catch (Throwable var27) {
-                        var4 = var27;
-                        Thread.sleep(1000L);
-                        ++var5;
-                     }
-                  }
-               } catch (Throwable var28) {
-                  try {
-                     var3.close();
-                  } catch (Throwable var23) {
-                     var28.addSuppressed(var23);
-                  }
-
-                  throw var28;
-               }
-
-               var3.close();
-               return;
-            }
-
-            var3.close();
-         } catch (Throwable var29) {
-            this.show("VSOCK HELLO probe failed: " + rootMessage(var29));
-         }
-
-      }, "WinAVF-vsock-hello-probe")).start();
+   private void startUbuntuVsockHelloProbe(Object vm) {
+      this.startUbuntuVsockHelloProbe(vm, false);
    }
 
-   private void startUbuntuVsockHelloProbe(Object var1) {
-      this.startUbuntuVsockHelloProbe(var1, false);
+   private void startUbuntuVsockHelloProbe(Object vm, boolean installed) {
+      UbuntuReadinessProbe.start(vm, this.getExternalFilesDir(null), installed,
+            () -> !this.activityDestroyed && this.lifecycle.owns(vm) && this.lifecycle.busy(),
+            revision -> this.ubuntuGuestRuntimeRevision = revision,
+            this::markUbuntuRuntimeReady, this::show);
    }
 
-   private void startUbuntuVsockHelloProbe(Object var1, boolean var2) {
-      (new Thread(() -> {
-         File var3 = new File(this.getExternalFilesDir((String)null), "ubuntu-gnome-vsock-report.txt");
-
-         try {
-            PrintWriter var4 = new PrintWriter(new FileOutputStream(var3, false));
-
-            label304: {
-               label303: {
-                  try {
-                     var4.println("transport=AVF_CONNECT_VSOCK");
-                     var4.println("guest=" + (var2 ? "UBUNTU_INSTALLED_SYSTEM" : "UBUNTU_LIVE_OR_INITRAMFS"));
-                     var4.println("port=4051");
-                     Throwable var5 = null;
-                     int var6 = 0;
-                     int var7 = 1;
-                     // Readiness revision 1 is a valid "still preparing" reply,
-                     // not a failed connection. Bound elapsed time, not replies:
-                     // a fast socket must not exhaust the entire first-boot wait.
-                     long readinessDeadline = android.os.SystemClock.elapsedRealtime()
-                           + (var2 ? 300000L : 90000L);
-
-                     while(true) {
-                        if (this.activityDestroyed || !this.lifecycle.owns(var1)
-                              || !this.lifecycle.busy()) {
-                           var4.println("result=LINUX_VSOCK_PROBE_CANCELLED");
-                           break label304;
-                        }
-                        if (android.os.SystemClock.elapsedRealtime() >= readinessDeadline) {
-                           var4.println("result=" + (var2 && var6 == 1 ? "LINUX_INSTALLED_RUNTIME_NOT_READY" : "LINUX_VSOCK_HELLO_NOT_OBSERVED"));
-                           var4.println("lastRevision=" + var6);
-                           String var10001 = var5 == null ? "none" : rootMessage(var5);
-                           var4.println("lastError=" + var10001);
-                           this.show("Ubuntu vsock HELLO was not observed.");
-                           break label304;
-                        }
-
-                        try {
-                           Method var8 = var1.getClass().getMethod("connectVsock", Long.TYPE);
-                           ParcelFileDescriptor var9 = (ParcelFileDescriptor)var8.invoke(var1, 4051L);
-
-                           try {
-                              label314: {
-                                 FileInputStream var10 = new FileInputStream(var9.getFileDescriptor());
-
-                                 label291: {
-                                    label290: {
-                                       try {
-                                          byte[] var11 = new byte[16];
-
-                                          int var13;
-                                          for(int var12 = 0; var12 < var11.length; var12 += var13) {
-                                             var13 = var10.read(var11, var12, var11.length - var12);
-                                             if (var13 < 0) {
-                                                throw new IllegalStateException("short LVH1 reply");
-                                             }
-                                          }
-
-                                          if (var11[0] != 76 || var11[1] != 86 || var11[2] != 72 || var11[3] != 49) {
-                                             throw new IllegalStateException("unexpected Linux vsock hello magic");
-                                          }
-
-                                          long var34 = (long)var11[4] & 255L | ((long)var11[5] & 255L) << 8 | ((long)var11[6] & 255L) << 16 | ((long)var11[7] & 255L) << 24;
-                                          this.ubuntuGuestRuntimeRevision = (int)var34;
-                                          var6 = (int)var34;
-                                          long var15 = (long)var11[8] & 255L | ((long)var11[9] & 255L) << 8 | ((long)var11[10] & 255L) << 16 | ((long)var11[11] & 255L) << 24;
-                                          long var17 = (long)var11[12] & 255L | ((long)var11[13] & 255L) << 8 | ((long)var11[14] & 255L) << 16 | ((long)var11[15] & 255L) << 24;
-                                          if (var34 >= 2L && (var17 & 3L) == 3L) {
-                                             this.getPreferences(0).edit().putBoolean("ubuntu_installed_runtime_ready", true)
-                                                   .remove(DisplaySettings.FIRST_BOOT_MODE)
-                                                   .remove(DisplaySettings.FIRST_BOOT_OVERRIDE).apply();
-                                             this.lifecycle.install(VmLifecycle.Install.READY);
-                                             var4.println("attempt=" + var7);
-                                             var4.println("hello=LVH1");
-                                             var4.println("revision=" + var34);
-                                             var4.println("agentStatus=" + var15);
-                                             var4.println("capabilities=" + var17);
-                                             var4.println("audioSocketAdvertised=" + ((var17 & 4L) != 0L));
-                                             var4.println("result=LINUX_INSTALLED_RUNTIME_READY");
-                                             this.show("Installed Ubuntu runtime is ready.");
-                                             break label291;
-                                          }
-
-                                          if (!var2) {
-                                             var4.println("attempt=" + var7);
-                                             var4.println("hello=LVH1");
-                                             var4.println("revision=" + var34);
-                                             var4.println("agentStatus=" + var15);
-                                             var4.println("capabilities=" + var17);
-                                             var4.println("audioSocketAdvertised=" + ((var17 & 4L) != 0L));
-                                             var4.println("result=LINUX_VSOCK_HELLO_PASS");
-                                             this.show("Ubuntu vsock HELLO received; Linux transport is live.");
-                                             break label290;
-                                          }
-
-                                          var4.println("attempt=" + var7);
-                                          var4.println("lastRevision=" + var34);
-                                          var4.flush();
-                                       } catch (Throwable var29) {
-                                          try {
-                                             var10.close();
-                                          } catch (Throwable var28) {
-                                             var29.addSuppressed(var28);
-                                          }
-
-                                          throw var29;
-                                       }
-
-                                       var10.close();
-                                       break label314;
-                                    }
-
-                                    var10.close();
-                                    break;
-                                 }
-
-                                 var10.close();
-                                 break label303;
-                              }
-                           } finally {
-                              var9.close();
-                           }
-                        } catch (Throwable var31) {
-                           var5 = var31;
-                        }
-
-                        Thread.sleep(1000L);
-                        ++var7;
-                     }
-                  } catch (Throwable var32) {
-                     try {
-                        var4.close();
-                     } catch (Throwable var27) {
-                        var32.addSuppressed(var27);
-                     }
-
-                     throw var32;
-                  }
-
-                  var4.close();
-                  return;
-               }
-
-               var4.close();
-               return;
-            }
-
-            var4.close();
-         } catch (Throwable var33) {
-            this.show("Ubuntu vsock probe failed: " + rootMessage(var33));
-         }
-
-      }, "WinAVF-ubuntu-vsock-hello")).start();
+   private void markUbuntuRuntimeReady() {
+      this.getPreferences(0).edit().putBoolean(UbuntuWorkspaceMedia.INSTALLED_READY, true)
+            .remove(DisplaySettings.FIRST_BOOT_MODE).remove(DisplaySettings.FIRST_BOOT_OVERRIDE).apply();
+      this.lifecycle.install(VmLifecycle.Install.READY);
    }
 
    private enum DisplayFallback { ALLOW_ENCODED_PATHS, FORCE_RAW }
@@ -5657,193 +4539,9 @@ public final class MainActivity extends Activity {
             }, this::show).start();
    }
 
-   private void startUbuntuAudioBridge(Object var1) {
+   private void startUbuntuAudioBridge(Object vm) {
       if (this.getPreferences(0).getBoolean("linux_audio_output_enabled", true)) {
-         if (this.activeAudioBridgeVm != var1) {
-            this.activeAudioBridgeVm = var1;
-            (new Thread(() -> {
-               File var2 = new File(this.getExternalFilesDir((String)null), "ubuntu-gnome-audio-bridge-report.txt");
-               AudioTrack var3 = null;
-               ParcelFileDescriptor var4 = null;
-
-               try {
-                  PrintWriter var72 = new PrintWriter(new FileOutputStream(var2, false));
-
-                  try {
-                     var72.println("transport=AVF_CONNECT_VSOCK");
-                     var72.println("guest=PIPEWIRE_NULL_SINK_MONITOR");
-                     var72.println("port=4053");
-                     Throwable var73 = null;
-                     Method var7 = var1.getClass().getMethod("connectVsock", Long.TYPE);
-                     long var8 = System.currentTimeMillis() + 300000L;
-
-                     while(System.currentTimeMillis() < var8) {
-                        try {
-                           var4 = (ParcelFileDescriptor)var7.invoke(var1, 4053L);
-                           break;
-                        } catch (Throwable var68) {
-                           var73 = var68;
-                           Thread.sleep(1000L);
-                        }
-                     }
-
-                     if (var4 == null) {
-                        throw new IllegalStateException("vsock 4053 did not become available", var73);
-                     }
-
-                     FileInputStream var10 = new FileInputStream(var4.getFileDescriptor());
-
-                     try {
-                        byte[] var11 = new byte[16];
-                        IoUtil.readExactly(var10, var11);
-                        ByteBuffer var12 = ByteBuffer.wrap(var11).order(ByteOrder.LITTLE_ENDIAN);
-                        if (var11[0] != 85 || var11[1] != 65 || var11[2] != 86 || var11[3] != 70 || ByteCodec.u16(var11, 4) != 1 || ByteCodec.u16(var11, 6) != 2 || var12.getInt(8) != 48000 || ByteCodec.u16(var11, 12) != 1) {
-                           throw new IllegalStateException("unexpected guest PCM header");
-                        }
-
-                        int var13 = AudioTrack.getMinBufferSize(48000, 12, 2);
-                        if (var13 <= 0) {
-                           throw new IllegalStateException("Android rejected 48 kHz stereo PCM");
-                        }
-
-                        int var14 = Math.max(var13, 16384);
-                        AudioFormat var15 = (new AudioFormat.Builder()).setEncoding(2).setSampleRate(48000).setChannelMask(12).build();
-                        AudioAttributes var16 = (new AudioAttributes.Builder()).setUsage(14).setContentType(2).build();
-                        var3 = (new AudioTrack.Builder()).setAudioAttributes(var16).setAudioFormat(var15).setBufferSizeInBytes(var14).setTransferMode(1).setPerformanceMode(1).build();
-                        if (var3.getState() != 1) {
-                           throw new IllegalStateException("Android AudioTrack initialization failed");
-                        }
-
-                        int var17 = Math.min(var3.getBufferCapacityInFrames(), 4096);
-                        var3.setBufferSizeInFrames(var17);
-                        var3.setVolume(1.0F);
-                        var3.play();
-                        var72.println("result=PCM_HEADER_PASS");
-                        var72.println("format=PCM_S16LE_48000_STEREO");
-                        var72.println("performance_mode=" + var3.getPerformanceMode());
-                        var72.println("buffer_frames=" + var3.getBufferSizeInFrames());
-                        var72.flush();
-                        byte[] var18 = new byte['耄'];
-                        int var19 = 0;
-                        long var20 = 0L;
-                        long var22 = System.currentTimeMillis() + 10000L;
-                        long var24 = var22 - 10000L;
-                        long var26 = 0L;
-
-                        while(true) {
-                           int var28 = ((InputStream)var10).read(var18, var19, var18.length - var19);
-                           if (var28 < 0) {
-                              var72.println("result=PCM_STREAM_ENDED");
-                              var72.println("pcm_bytes=" + var20);
-                              var72.flush();
-                              break;
-                           }
-
-                           if (var28 != 0) {
-                              int var29 = var19 + var28;
-                              int var30 = var29 & -4;
-
-                              int var32;
-                              for(int var31 = 0; var31 < var30; var31 += var32) {
-                                 var32 = var3.write(var18, var31, var30 - var31, 0);
-                                 if (var32 <= 0) {
-                                    throw new IllegalStateException("AudioTrack write failed: " + var32);
-                                 }
-                              }
-
-                              var20 += (long)var30;
-                              var19 = var29 - var30;
-                              if (var19 > 0) {
-                                 System.arraycopy(var18, var30, var18, 0, var19);
-                              }
-
-                              long var74 = System.currentTimeMillis();
-                              if (var74 >= var22) {
-                                 var72.println("pcm_bytes=" + var20);
-                                 var72.println("pcm_bytes_per_s=" + (var20 - var26) * 1000L / Math.max(1L, var74 - var24));
-                                 var72.println("underruns=" + var3.getUnderrunCount());
-                                 var72.println("buffer_frames=" + var3.getBufferSizeInFrames());
-                                 var72.flush();
-                                 var24 = var74;
-                                 var26 = var20;
-                                 var22 = var74 + 10000L;
-                              }
-                           }
-                        }
-                     } catch (Throwable var67) {
-                        try {
-                           ((InputStream)var10).close();
-                        } catch (Throwable var66) {
-                           var67.addSuppressed(var66);
-                        }
-
-                        throw var67;
-                     }
-
-                     ((InputStream)var10).close();
-                  } catch (Throwable var69) {
-                     try {
-                        var72.close();
-                     } catch (Throwable var65) {
-                        var69.addSuppressed(var65);
-                     }
-
-                     throw var69;
-                  }
-
-                  var72.close();
-               } catch (Throwable var70) {
-                  Throwable var5 = var70;
-                  Log.w("U-AVF", "Ubuntu audio bridge failed", var70);
-
-                  try {
-                     PrintWriter var6 = new PrintWriter(new FileOutputStream(var2, true));
-
-                     try {
-                        var6.println("result=AUDIO_BRIDGE_FAILED");
-                        var6.println("error=" + rootMessage(var5));
-                     } catch (Throwable var63) {
-                        try {
-                           var6.close();
-                        } catch (Throwable var62) {
-                           var63.addSuppressed(var62);
-                        }
-
-                        throw var63;
-                     }
-
-                     var6.close();
-                  } catch (Exception var64) {
-                  }
-               } finally {
-                  if (var3 != null) {
-                     try {
-                        var3.pause();
-                     } catch (Exception var61) {
-                     }
-
-                     try {
-                        var3.flush();
-                     } catch (Exception var60) {
-                     }
-
-                     try {
-                        var3.release();
-                     } catch (Exception var59) {
-                     }
-                  }
-
-                  if (var4 != null) {
-                     try {
-                        var4.close();
-                     } catch (Exception var58) {
-                     }
-                  }
-
-               }
-
-            }, "WinAVF-ubuntu-audio-bridge")).start();
-         }
+         this.ubuntuAudio.start(vm, this.getExternalFilesDir(null));
       }
    }
 
@@ -5906,99 +4604,6 @@ public final class MainActivity extends Activity {
          }
 
       }, "WinAVF-esc-input-probe")).start();
-   }
-
-   private void startSerialEscapeInputProbe(Object var1) {
-      (new Thread(() -> {
-         File var2 = new File(this.getExternalFilesDir((String)null), "uefi-serial-escape-probe-report.txt");
-
-         try {
-            PrintWriter var18 = new PrintWriter(new FileOutputStream(var2, false));
-
-            label100: {
-               try {
-                  var18.println("transport=APP_CONSOLE_INPUT_TO_EDK2_SERIAL_CONIN");
-                  var18.println("expectedPrompt=Press ESCAPE for boot options");
-                  var18.println("mode=BOUNDED_PERIODIC_ESC_UNTIL_FIRMWARE_ACK");
-                  long var19 = System.currentTimeMillis() + 15000L;
-
-                  while(!this.bootOptionsPromptSeen && System.currentTimeMillis() < var19) {
-                     Thread.sleep(25L);
-                  }
-
-                  var18.println("promptSeen=" + this.bootOptionsPromptSeen);
-                  if (this.bootOptionsPromptSeen) {
-                     int var6 = this.observedFrameCount;
-                     OutputStream var7 = (OutputStream)var1.getClass().getMethod("getConsoleInput").invoke(var1);
-                     var18.println("payloadHex=1B");
-                     var18.println("framesBefore=" + var6);
-                     int var8 = 0;
-                     long var9 = System.currentTimeMillis() + 55000L;
-
-                     while(!this.serialEscapeAcknowledged && System.currentTimeMillis() < var9) {
-                        var7.write(27);
-                        var7.flush();
-                        ++var8;
-                        Thread.sleep(250L);
-                     }
-
-                     var18.println("uartWrites=" + var8);
-                     var18.println("uartWrite=" + (var8 > 0 ? "PASS" : "NOT_SENT"));
-                     this.show("UEFI serial input probe: bounded ESC stream finished.");
-                     Thread.sleep(3000L);
-                     int var11 = this.observedFrameCount;
-                     var18.println("framesAfter=" + var11);
-                     var18.println("firmwareEscapeAcknowledged=" + this.serialEscapeAcknowledged);
-                     String var10001 = this.serialEscapeAcknowledged && var11 > var6 ? "UEFI_SERIAL_INPUT_AND_GRAPHICS_RESPONSE_PASS" : (this.serialEscapeAcknowledged ? "UEFI_SERIAL_INPUT_PASS_FRAME_NOT_OBSERVED" : "UART_WRITE_PASS_RESPONSE_NOT_OBSERVED");
-                     var18.println("result=" + var10001);
-                     break label100;
-                  }
-
-                  var18.println("result=NOT_SENT_PROMPT_NOT_OBSERVED");
-                  this.show("UEFI serial input probe: prompt was not observed; ESC was not sent.");
-               } catch (Throwable var16) {
-                  try {
-                     var18.close();
-                  } catch (Throwable var15) {
-                     var16.addSuppressed(var15);
-                  }
-
-                  throw var16;
-               }
-
-               var18.close();
-               return;
-            }
-
-            var18.close();
-         } catch (Throwable var17) {
-            Throwable var3 = var17;
-
-            try {
-               PrintWriter var4 = new PrintWriter(new FileOutputStream(var2, false));
-
-               try {
-                  var4.println("transport=APP_CONSOLE_INPUT_TO_EDK2_SERIAL_CONIN");
-                  var4.println("result=ERROR");
-                  var4.println("error=" + rootMessage(var3));
-               } catch (Throwable var13) {
-                  try {
-                     var4.close();
-                  } catch (Throwable var12) {
-                     var13.addSuppressed(var12);
-                  }
-
-                  throw var13;
-               }
-
-               var4.close();
-            } catch (Throwable var14) {
-            }
-
-            this.show("UEFI serial input probe failed: " + rootMessage(var17));
-         }
-
-      }, "WinAVF-serial-escape-probe")).start();
    }
 
    private void applyStagedImagePatch(File var1, File var2) throws Exception {
@@ -6687,201 +5292,19 @@ public final class MainActivity extends Activity {
 
    }
 
-   private File copyAsset(String var1, File var2, long var3) throws Exception {
-      if (!var2.isFile() || var3 >= 0L && var2.length() != var3) {
-         InputStream var5 = this.getAssets().open(var1);
-
-         try {
-            FileOutputStream var6 = new FileOutputStream(var2);
-
-            try {
-               byte[] var7 = new byte[1048576];
-
-               int var8;
-               while((var8 = var5.read(var7)) >= 0) {
-                  var6.write(var7, 0, var8);
-               }
-            } catch (Throwable var11) {
-               try {
-                  var6.close();
-               } catch (Throwable var10) {
-                  var11.addSuppressed(var10);
-               }
-
-               throw var11;
-            }
-
-            var6.close();
-         } catch (Throwable var12) {
-            if (var5 != null) {
-               try {
-                  var5.close();
-               } catch (Throwable var9) {
-                  var12.addSuppressed(var9);
-               }
-            }
-
-            throw var12;
-         }
-
-         if (var5 != null) {
-            var5.close();
-         }
-
-         return var2;
-      } else {
-         return var2;
-      }
+   private File copyFile(File source, File target, long expectedBytes, boolean force) throws IOException {
+      return GuestMediaFiles.copy(source, target, expectedBytes, force,
+            () -> this.show("Copying Windows setup medium into app-private storage…"));
    }
 
-   private File copyVerifiedAsset(String var1, File var2, long var3, String var5) throws Exception {
-      if (var2.isFile() && var2.length() == var3 && var5.equalsIgnoreCase(Digest.hex(Digest.sha256File(var2)))) {
-         return var2;
-      } else {
-         File var6 = var2.getParentFile();
-         if (var6 != null && !var6.isDirectory() && !var6.mkdirs()) {
-            throw new IllegalStateException("Cannot create verified asset staging directory.");
-         } else {
-            File var7 = new File(var6, var2.getName() + ".verified-tmp");
-            if (var7.exists() && !var7.delete()) {
-               throw new IllegalStateException("Cannot clear stale verified asset staging file.");
-            } else {
-               InputStream var8 = this.getAssets().open(var1);
-
-               try {
-                  FileOutputStream var9 = new FileOutputStream(var7);
-
-                  try {
-                     byte[] var10 = new byte[1048576];
-
-                     int var11;
-                     while((var11 = var8.read(var10)) >= 0) {
-                        var9.write(var10, 0, var11);
-                     }
-
-                     var9.flush();
-                     var9.getFD().sync();
-                  } catch (Throwable var14) {
-                     try {
-                        var9.close();
-                     } catch (Throwable var13) {
-                        var14.addSuppressed(var13);
-                     }
-
-                     throw var14;
-                  }
-
-                  var9.close();
-               } catch (Throwable var15) {
-                  if (var8 != null) {
-                     try {
-                        var8.close();
-                     } catch (Throwable var12) {
-                        var15.addSuppressed(var12);
-                     }
-                  }
-
-                  throw var15;
-               }
-
-               if (var8 != null) {
-                  var8.close();
-               }
-
-               if (var7.length() == var3 && var5.equalsIgnoreCase(Digest.hex(Digest.sha256File(var7)))) {
-                  if (var2.exists() && !var2.delete()) {
-                     var7.delete();
-                     throw new IllegalStateException("Cannot replace an old platform update payload.");
-                  } else if (!var7.renameTo(var2)) {
-                     var7.delete();
-                     throw new IllegalStateException("Cannot finalize verified platform update payload.");
-                  } else {
-                     return var2;
-                  }
-               } else {
-                  var7.delete();
-                  throw new SecurityException("Bundled platform update failed its size or SHA-256 check.");
-               }
-            }
-         }
+   private File ensureSparseTarget(File target) throws Exception {
+      GuestMediaFiles.sparseTarget(target, 64L << 30);
+      long allocated = Os.stat(target.getAbsolutePath()).st_blocks * 512L;
+      this.show("Sparse Windows target: logical=" + target.length() + " physical=" + allocated + " bytes");
+      if (allocated > (16L << 20)) {
+         throw new IllegalStateException("Sparse Windows target allocated too much: " + allocated);
       }
-   }
-
-   private File copyFile(File var1, File var2, long var3, boolean var5) throws Exception {
-      long var6 = var3 >= 0L ? var3 : var1.length();
-      if (!var5 && var2.isFile() && var2.length() == var6) {
-         return var2;
-      } else {
-         this.show("Copying Windows setup medium into app-private storage…");
-         FileInputStream var8 = new FileInputStream(var1);
-
-         try {
-            FileOutputStream var9 = new FileOutputStream(var2);
-
-            try {
-               byte[] var10 = new byte[1048576];
-
-               int var11;
-               while((var11 = ((InputStream)var8).read(var10)) >= 0) {
-                  var9.write(var10, 0, var11);
-               }
-            } catch (Throwable var14) {
-               try {
-                  var9.close();
-               } catch (Throwable var13) {
-                  var14.addSuppressed(var13);
-               }
-
-               throw var14;
-            }
-
-            var9.close();
-         } catch (Throwable var15) {
-            try {
-               ((InputStream)var8).close();
-            } catch (Throwable var12) {
-               var15.addSuppressed(var12);
-            }
-
-            throw var15;
-         }
-
-         ((InputStream)var8).close();
-         if (var2.length() != var6) {
-            throw new IllegalStateException("Setup-medium copy has unexpected size");
-         } else {
-            return var2;
-         }
-      }
-   }
-
-   private File ensureSparseTarget(File var1) throws Exception {
-      if (!var1.isFile() || var1.length() != 68719476736L) {
-         RandomAccessFile var2 = new RandomAccessFile(var1, "rw");
-
-         try {
-            var2.setLength(68719476736L);
-         } catch (Throwable var6) {
-            try {
-               var2.close();
-            } catch (Throwable var5) {
-               var6.addSuppressed(var5);
-            }
-
-            throw var6;
-         }
-
-         var2.close();
-      }
-
-      long var7 = Os.stat(var1.getAbsolutePath()).st_blocks * 512L;
-      long var10001 = var1.length();
-      this.show("Sparse Windows target: logical=" + var10001 + " physical=" + var7 + " bytes");
-      if (var7 > 16777216L) {
-         throw new IllegalStateException("Sparse Windows target allocated too much: " + var7);
-      } else {
-         return var1;
-      }
+      return target;
    }
 
    private static Object call(Object var0, String var1, Class<?> var2, Object var3) throws Exception {
@@ -6915,32 +5338,15 @@ public final class MainActivity extends Activity {
       });
    }
 
-   private static String rootMessage(Throwable var0) {
-      while(var0.getCause() != null) {
-         var0 = var0.getCause();
-      }
-
-      String var10000 = var0.getClass().getSimpleName();
-      return var10000 + ": " + var0.getMessage();
-   }
-
    static {
-      CONSOLE_BINARY_ECHO_READY = "WINAVF_ECHO_READY\n".getBytes(StandardCharsets.US_ASCII);
       V22_EXT4_CONTROL_MEDIA_SHA256 = "F3C9498D0E4EFFAB2E38C75E523492A8CDD CFA9DC6CB3DDF1B48632E26C57D2C".replace(" ", "");
    }
 
-   private static enum LaunchProfile {
+   private enum LaunchProfile {
       WINDOWS,
       LINUX,
       P33_FRAME_BRIDGE,
       V22_EXT4_CONTROL,
-      V23_EXT4_BLOCK_IO;
-
-      // $FF: synthetic method
-      private static LaunchProfile[] $values() {
-         return new LaunchProfile[]{WINDOWS, LINUX, P33_FRAME_BRIDGE, V22_EXT4_CONTROL, V23_EXT4_BLOCK_IO};
-      }
+      V23_EXT4_BLOCK_IO
    }
-
-
 }
