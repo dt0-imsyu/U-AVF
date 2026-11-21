@@ -99,7 +99,7 @@ public final class MainActivity extends Activity {
    private boolean awaitingKeyboardCapture;
    private TextView productStatus;
    private ConsoleFrameDecoder frameDecoder;
-   private boolean frameVisible;
+   private final GuestFrameSession frameSession = new GuestFrameSession();
    private final DiagnosticSerialCapture diagnosticSerial = new DiagnosticSerialCapture();
    private volatile int observedFrameCount;
    private final AtomicBoolean frameRevealPostQueued = new AtomicBoolean();
@@ -117,15 +117,12 @@ public final class MainActivity extends Activity {
    private DiagnosticsScreens diagnosticScreens;
    private FigmaCompatibilityView compatibilityView;
    private boolean compatibilityViewRunning;
-   private boolean welcomeFirstRun;
    private String createWorkspaceOs;
    private String draftUbuntuTitle="";
    private String workspaceSettingsTab;
    private int workspaceSettingsPreviousTab=-1;
    private boolean wizardSettingsActive;
    private final SessionEdgeGesture edgeGesture = new SessionEdgeGesture();
-   private int guestFrameWidth;
-   private int guestFrameHeight;
    private String currentNotice;
    private Handler uiHandler;
 
@@ -134,8 +131,7 @@ public final class MainActivity extends Activity {
       this.productScreen = ProductScreen.ONBOARDING;
       this.createWorkspaceOs = "ubuntu";
       this.workspaceSettingsTab = "Performance";
-      this.guestFrameWidth = 1280;
-      this.guestFrameHeight = 800;
+      this.frameSession.observeGeometry(1280, 800);
       this.currentNotice = "";
    }
 
@@ -208,7 +204,7 @@ public final class MainActivity extends Activity {
             return selectedProfile == LaunchProfile.LINUX ? GuestVmSession.GuestOs.UBUNTU : GuestVmSession.GuestOs.WINDOWS;
          }
          public boolean destroyed() { return activityDestroyed; }
-         public boolean frameVisible() { return frameVisible; }
+         public boolean frameVisible() { return frameSession.visible(); }
          public boolean isManagedVmRunning() { return MainActivity.this.isManagedVmRunning(); }
          public File persistentUbuntuDiskFile() { return MainActivity.this.persistentUbuntuDiskFile(); }
          public ConsoleFrameDecoder frameDecoder() { return frameDecoder; }
@@ -239,7 +235,7 @@ public final class MainActivity extends Activity {
             this.diagnosticSerial, new DiagnosticVmLaunches.Host() {
          public boolean skipValidation() { return skipDiskValidation(); }
          public void resetFrames(boolean hide) {
-            if (hide) frameVisible = false;
+            if (hide) frameSession.reset();
             observedFrameCount = 0;
          }
          public int observedFrames() { return observedFrameCount; }
@@ -362,8 +358,7 @@ public final class MainActivity extends Activity {
       this.frameDecoder = new ConsoleFrameDecoder(new ConsoleFrameDecoder.Listener() {
          @Override public void onFrame(ConsoleFrameDecoder.Frame frame) {
             observedFrameCount++;
-            guestFrameWidth = frame.width;
-            guestFrameHeight = frame.height;
+            frameSession.observeGeometry(frame.width, frame.height);
             // Firmware UART frames are not proof that a Linux desktop exists.
             if (selectedProfile == LaunchProfile.LINUX && transition.visible()) return;
             queueFrameForDisplay(frame);
@@ -440,7 +435,7 @@ public final class MainActivity extends Activity {
    }
 
    private boolean desktopHasFocus() {
-      return this.frameVisible && this.homePanel.getVisibility() != View.VISIBLE;
+      return this.frameSession.visible() && this.homePanel.getVisibility() != View.VISIBLE;
    }
 
    private boolean guestKeyboardAvailable() {
@@ -512,7 +507,8 @@ public final class MainActivity extends Activity {
    }
 
    private void onGuestRelativePointer(int dx, int dy) {
-      if (this.frameVisible) this.guestInput.relativePointer(dx, dy, this.guestFrameWidth, this.guestFrameHeight);
+      if (this.frameSession.visible()) this.guestInput.relativePointer(dx, dy,
+              this.frameSession.width(), this.frameSession.height());
    }
 
    private void updateRuntimeEdgeExclusion() {
@@ -536,24 +532,29 @@ public final class MainActivity extends Activity {
       this.sessionControls.open();
    }
 
-   /** Shows a decoded frame, revealing the desktop on the first one after a transition. */
+   /**
+    * Shows a decoded frame, revealing the desktop on the first one after a transition.
+    *
+    * Frames are numbered per connection, so a frame queued just before a
+    * reconnect would otherwise be drawn on top of the new session. The check
+    * happens before the surface is touched, not after.
+    */
    private void queueFrameForDisplay(ConsoleFrameDecoder.Frame frame) {
       if (!this.transition.acceptsDesktop()) return;
+      if (this.frameSession.offer(this.frameSession.connection(), frame.sequence)
+            == GuestFrameSession.Accept.STALE) return;
       FrameSurfaceView surface = this.frameSurface;
-      if (surface != null) {
-         surface.present(frame);
-         if (!this.frameVisible && this.frameRevealPostQueued.compareAndSet(false, true)) {
-            this.runOnUiThread(() -> {
-               this.frameRevealPostQueued.set(false);
-               if (!this.frameVisible) {
-                  this.frameVisible = true;
-                  this.completeDesktopTransition();
-                  this.showRunningDesktop();
-               }
-
-            });
-         }
-      }
+      if (surface == null) return;
+      surface.present(frame);
+      if (this.frameSession.visible()) return;
+      if (!this.frameRevealPostQueued.compareAndSet(false, true)) return;
+      this.runOnUiThread(() -> {
+         this.frameRevealPostQueued.set(false);
+         if (this.frameSession.visible()) return;
+         this.frameSession.markVisible();
+         this.completeDesktopTransition();
+         this.showRunningDesktop();
+      });
    }
 
    private void resetGuestFrameSurface() {
@@ -564,9 +565,7 @@ public final class MainActivity extends Activity {
       this.displayConnection.begin();
       this.displaySurfaces.close();
       this.ubuntuDisplay.guestReady(false);
-      this.frameVisible = false;
-      this.guestFrameWidth = 0;
-      this.guestFrameHeight = 0;
+      this.frameSession.reset();
       this.guestInput.resetPointer();
       this.frameRevealPostQueued.set(false);
       FrameSurfaceView surface = this.frameSurface;
@@ -585,7 +584,7 @@ public final class MainActivity extends Activity {
    }
 
    private void navigateBack() {
-      Location previous=this.navigation.back(this.frameVisible);
+      Location previous=this.navigation.back(this.frameSession.visible());
       if(previous==null) {
          if(mainTab(this.productScreen)>0 && this.homePanel.getVisibility()==View.VISIBLE) {
             this.renderBackDestination(ProductScreen.MODE_SELECTION);
@@ -629,7 +628,7 @@ public final class MainActivity extends Activity {
    private SessionControls createSessionControls() {
       return new SessionControls(this, this.page, this.frameSurface, this.displaySurfaces, this.displayConnection,
             this.guestInput, new SessionControls.Host() {
-         @Override public boolean frameVisible() { return MainActivity.this.frameVisible; }
+         @Override public boolean frameVisible() { return MainActivity.this.frameSession.visible(); }
          @Override public boolean homeVisible() { return homePanel.getVisibility() == View.VISIBLE; }
          @Override public boolean windows() { return selectedProfile == LaunchProfile.WINDOWS; }
          @Override public boolean vmRunning() { return isManagedVmRunning(); }
@@ -694,7 +693,7 @@ public final class MainActivity extends Activity {
          else this.windowsSession.attach(setup);
          return;
       }
-      if (!this.frameVisible) {
+      if (!this.frameSession.visible()) {
          if (this.isManagedVmRunning()) {
             if(this.transition.visible())this.transitionTick.run();
             else guestSession.reconnectRunningFrameVmIfPresent();
@@ -738,7 +737,7 @@ public final class MainActivity extends Activity {
                new Location(this.productScreen, this.workspaceSettingsTab,
                      this.wizardSettingsActive, this.sessionControls.isOpen()),
                this.homePanel.getVisibility()==View.VISIBLE, this.homePanel.getChildCount()>0,
-               this.frameVisible && !this.transition.visible());
+               this.frameSession.visible() && !this.transition.visible());
       }
       switch (screen) {
          case DIAGNOSTICS, DIAGNOSTIC_LOG, DIAGNOSTIC_RUNS -> this.showDiagnosticsScreen(screen);
@@ -923,7 +922,7 @@ public final class MainActivity extends Activity {
    private void showFigmaSetupStatus() {
       this.enterProductScreen(ProductScreen.INSTALL_STATUS, true);
       FigmaSetupView setup=new FigmaSetupView(this,this.isoPresent(),() -> {
-         if(this.frameVisible)this.returnToRunningVm();
+         if(this.frameSession.visible())this.returnToRunningVm();
          else this.renderProductScreen(this.persistentUbuntuDiskFile().isFile()
                ? ProductScreen.LINUX_HOME : ProductScreen.CREATE_IMAGE);
       },this::navigateBack,() -> this.renderProductScreen(ProductScreen.DIAGNOSTICS));
@@ -933,7 +932,7 @@ public final class MainActivity extends Activity {
          @Override public void run() {
             if(activityDestroyed || productScreen!=ProductScreen.INSTALL_STATUS || setup.getParent()!=homePanel)return;
             boolean disk=persistentUbuntuDiskFile().isFile();
-            setup.state(lifecycle.install(),disk,disk && getPreferences(0).getBoolean("ubuntu_installed_runtime_ready",false),frameVisible);
+            setup.state(lifecycle.install(),disk,disk && getPreferences(0).getBoolean("ubuntu_installed_runtime_ready",false),frameSession.visible());
             setup.postDelayed(this,800);
          }
       };
@@ -1136,7 +1135,7 @@ public final class MainActivity extends Activity {
          public boolean guestConnected() {
             return selectedProfile != LaunchProfile.WINDOWS && ubuntuServices.connected();
          }
-         public boolean frameVisible() { return MainActivity.this.frameVisible; }
+         public boolean frameVisible() { return MainActivity.this.frameSession.visible(); }
          public String version() { return releaseVersionLabel(); }
          public String displayLabel() { return configuredDisplayLabel(); }
          public void checkCompatibility() { beginCompatibilityCheck(); }
@@ -1293,15 +1292,14 @@ public final class MainActivity extends Activity {
             if (transitionView != null) transitionView.setVisibility(View.GONE);
             showFigmaWorkspaceScreen(ProductScreen.WINDOWS_HOME);
          }
-         @Override public boolean frameVisible() { return MainActivity.this.frameVisible; }
-         @Override public void frameLost() { frameVisible = false; }
+         @Override public boolean frameVisible() { return MainActivity.this.frameSession.visible(); }
+         @Override public void frameLost() { frameSession.reset(); }
          @Override public void geometry(int width, int height) {
-            guestFrameWidth = width;
-            guestFrameHeight = height;
+            frameSession.observeGeometry(width, height);
          }
          @Override public void present(int width, int height) {
             frameSurface.setEncodedMode(true, width, height);
-            frameVisible = true;
+            frameSession.markVisible();
             completeDesktopTransition();
             showRunningDesktop();
          }
@@ -1406,7 +1404,7 @@ public final class MainActivity extends Activity {
             return !activityDestroyed && guestSession.mayBeRunning() && !guestSession.stopRequested();
          }
 
-         @Override public boolean frameVisible() { return MainActivity.this.frameVisible; }
+         @Override public boolean frameVisible() { return MainActivity.this.frameSession.visible(); }
 
          @Override public boolean displayFocused() {
             return desktopHasFocus() && !sessionControls.isOpen() && !transition.visible();
@@ -1417,8 +1415,7 @@ public final class MainActivity extends Activity {
          }
 
          @Override public void presentRawFrame(ConsoleFrameDecoder.Frame frame) {
-            guestFrameWidth = frame.width;
-            guestFrameHeight = frame.height;
+            frameSession.observeGeometry(frame.width, frame.height);
             queueFrameForDisplay(frame);
          }
 
@@ -1435,8 +1432,8 @@ public final class MainActivity extends Activity {
    }
 
    private void onMavkDisplayDisconnected(Object vm) {
-      boolean wasVisible = this.frameVisible;
-      this.frameVisible = false;
+      boolean wasVisible = this.frameSession.visible();
+      this.frameSession.reset();
       if (!guestSession.mayBeRunning() || !this.lifecycle.owns(vm) || !this.transition.acceptsDesktop()) return;
       if (wasVisible || !this.transition.visible()) this.beginRuntimeTransition(RuntimeTransition.Mode.DISPLAY_RECONNECT);
       this.transition.failure(UiLanguage.text("Сеанс Ubuntu всё ещё работает. Mavk потерял вывод изображения."),
@@ -1446,12 +1443,11 @@ public final class MainActivity extends Activity {
 
    private void presentUbuntuSurface(int width, int height, Runnable fit) {
       this.completeDesktopTransition();
-      this.guestFrameWidth = width;
-      this.guestFrameHeight = height;
+      this.frameSession.observeGeometry(width, height);
       fit.run();
       this.frameSurface.setEncodedMode(true, width, height);
-      if (!this.frameVisible) {
-         this.frameVisible = true;
+      if (!this.frameSession.visible()) {
+         frameSession.markVisible();
          this.showRunningDesktop();
       }
    }
@@ -1484,7 +1480,7 @@ public final class MainActivity extends Activity {
          }
 
          this.status.setText(message);
-         if (!this.frameVisible) {
+         if (!this.frameSession.visible()) {
             this.status.setVisibility(0);
          }
 
