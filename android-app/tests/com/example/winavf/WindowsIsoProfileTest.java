@@ -2,17 +2,26 @@
 package com.example.winavf;
 
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 public final class WindowsIsoProfileTest {
     public static void main(String[] args) throws Exception {
         long wimSize = 6_347_029_986L;
         WindowsSetupDisk.requireMatchingPayload(new WindowsInstallIso.Inspection(7_253_645_312L, 900, wimSize, false));
         WindowsSetupDisk.requireMatchingPayload(new WindowsInstallIso.Inspection(7_253_647_360L, 900, wimSize, false));
+        WindowsSetupDisk.requireMatchingPayload(
+                new WindowsInstallIso.Inspection(8_528_523_264L, 630_231_583, 7_612_941_295L, false));
         expectFailure(() -> WindowsSetupDisk.requireMatchingPayload(
-                new WindowsInstallIso.Inspection(7_253_645_312L, 900, wimSize - 1, false)));
+                new WindowsInstallIso.Inspection(7_253_645_312L, 900, 0, false)));
         expectFailure(() -> WindowsSetupDisk.requireMatchingPayload(
                 new WindowsInstallIso.Inspection(7_253_645_312L, 900, wimSize, true)));
+        WindowsWimPayload.requireSetupImage(1);
+        expectFailure(() -> WindowsWimPayload.requireSetupImage(0));
+        expectFailure(() -> WindowsWimPayload.requireSetupImage(2));
         byte[] payload = "abc".getBytes(StandardCharsets.US_ASCII);
         String result = WindowsInstallIso.digestPayload(payload.length, (offset, size, buffer) -> {
             buffer[0] = payload[(int) offset];
@@ -32,13 +41,32 @@ public final class WindowsIsoProfileTest {
             throw new AssertionError("UDF status text changed: " + udf.getMessage());
         if (WindowsInstallIso.statusFailure(3).getMessage().equals(udf.getMessage()))
             throw new AssertionError("Missing ARM64 EFI must not report a UDF failure");
-        for (int status = 0; status <= 5; status++) {
+        if (WindowsInstallIso.statusFailure(6).getMessage().equals(udf.getMessage()))
+            throw new AssertionError("Incomplete ISO sectors must not report a UDF failure");
+        for (int status = 0; status <= 6; status++) {
             if (status == 0) continue;
             if (WindowsInstallIso.statusFailure(status).getMessage().isBlank())
                 throw new AssertionError("Empty message for status " + status);
         }
+        checkBootConfigurationPatch();
 
         System.out.println("WINDOWS_ISO_PROFILE_TEST=PASS");
+    }
+
+    private static void checkBootConfigurationPatch() throws Exception {
+        byte[] source = {1, 2, 3};
+        byte[] patch = ByteBuffer.allocate(29).putLong(0x5541564642434431L).putInt(3)
+                .putInt(1).putInt(2).putInt(-1).putInt(1).put((byte) 4).array();
+        try (var input = new DataInputStream(new ByteArrayInputStream(patch))) {
+            if (!Arrays.equals(WindowsIsoBootRuntime.patchBcd(source, input), new byte[]{2, 3, 4}))
+                throw new AssertionError("BCD patch did not reuse the stock bytes");
+        }
+        ByteBuffer.wrap(patch).putInt(12, 2);
+        expectFailure(() -> {
+            try (var input = new DataInputStream(new ByteArrayInputStream(patch))) {
+                WindowsIsoBootRuntime.patchBcd(source, input);
+            }
+        });
     }
 
     private interface CheckedAction { void run() throws IOException; }

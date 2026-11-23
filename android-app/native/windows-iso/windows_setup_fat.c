@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 #include "ff.h"
 #include "diskio.h"
+#include "windows_iso.h"
+#include "windows_setup_source.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
@@ -10,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -64,6 +67,7 @@ DRESULT disk_ioctl(BYTE drive, BYTE operation, void *data) {
         case CTRL_SYNC: return fsync(disk_fd) ? RES_ERROR : RES_OK;
         case GET_SECTOR_COUNT: *(LBA_t *)data = volume_sectors; return RES_OK;
         case GET_SECTOR_SIZE: *(WORD *)data = sector_bytes; return RES_OK;
+        case GET_BLOCK_SIZE: *(DWORD *)data = 1; return RES_OK;
         default: return RES_PARERR;
     }
 }
@@ -142,16 +146,112 @@ static int write_or_verify(int input, off_t size, const char *name, BYTE *buffer
     return result == FR_OK ? closed : result;
 }
 
-static int volume_bounds(int fd, jlong offset, jlong length, struct stat *destination) {
+static int volume_bounds(int fd, int64_t offset, int64_t length, struct stat *destination) {
     return offset >= 0 && length > 0 && !(offset % sector_bytes) &&
            !(length % sector_bytes) && length / sector_bytes <= UINT32_MAX &&
            !fstat(fd, destination) && S_ISREG(destination->st_mode) &&
            offset <= destination->st_size && length <= destination->st_size - offset;
 }
 
-JNIEXPORT jint JNICALL Java_com_example_winavf_WindowsSetupDisk_writeParts(
-        JNIEnv *env, jclass clazz, jint output, jlong offset, jlong length, jintArray parts) {
-    (void)clazz;
+static int copy_setup_file(const char *path, struct windows_iso_payload *source, void *state) {
+    if (!source)
+        return f_mkdir(path);
+    /* The WIM converter supplies this payload as FAT32-sized SWM parts. */
+    if (!strcasecmp(path, "sources/install.wim") || !strcasecmp(path, "sources/install.esd"))
+        return FR_OK;
+    int64_t size = windows_iso_payload_size(source);
+    if (size < 0 || (uint64_t)size >= UINT64_C(4294967296))
+        return FR_INVALID_PARAMETER;
+    FIL file;
+    int result = f_open(&file, path, FA_CREATE_NEW | FA_WRITE);
+    if (result != FR_OK)
+        return result;
+    BYTE *buffer = state;
+    for (int64_t offset = 0; result == FR_OK && offset < size;) {
+        UINT amount = size - offset > chunk_bytes ? chunk_bytes : (UINT)(size - offset);
+        if (windows_iso_payload_read(source, offset, buffer, amount) != (int)amount) {
+            result = FR_DISK_ERR;
+            break;
+        }
+        UINT written = 0;
+        result = f_write(&file, buffer, amount, &written);
+        if (result == FR_OK && written != amount)
+            result = FR_DENIED;
+        offset += amount;
+    }
+    int closed = f_close(&file);
+    return result == FR_OK ? closed : result;
+}
+
+static int verify_setup_source(const struct windows_iso_info *info) {
+    FILINFO boot_wim, loader;
+    if (f_stat("/SOURCES/BOOT.WIM", &boot_wim) != FR_OK ||
+        (int64_t)boot_wim.fsize != info->boot_wim_bytes ||
+        f_stat("/EFI/BOOT/BOOTAA64.EFI", &loader) != FR_OK || !loader.fsize)
+        return FR_DISK_ERR;
+    return FR_OK;
+}
+
+static int mark_setup_source(void) {
+    int result = f_setlabel("WINSETUP");
+    if (result != FR_OK)
+        return result;
+    FIL marker;
+    result = f_open(&marker, "/UAVF-DISPLAY.TAG", FA_CREATE_NEW | FA_WRITE);
+    if (result != FR_OK)
+        return result;
+    static const char content[] = "U-AVF Windows Setup source\r\n";
+    UINT written = 0;
+    result = f_write(&marker, content, sizeof(content) - 1, &written);
+    int closed = f_close(&marker);
+    if (result == FR_OK && written != sizeof(content) - 1)
+        return FR_DISK_ERR;
+    return result == FR_OK ? closed : result;
+}
+
+int windows_setup_create_source(int iso, int destination, int64_t offset, int64_t length) {
+    struct stat source, target;
+    struct windows_iso_info info;
+    if (!volume_bounds(destination, offset, length, &target) || fstat(iso, &source) ||
+        (source.st_dev == target.st_dev && source.st_ino == target.st_ino) ||
+        windows_iso_probe(iso, &info) != WINDOWS_ISO_OK)
+        return FR_INVALID_PARAMETER;
+
+    BYTE *buffer = malloc(chunk_bytes);
+    if (!buffer)
+        return FR_NOT_ENOUGH_CORE;
+    pthread_mutex_lock(&volume_lock);
+    disk_fd = destination;
+    volume_offset = offset;
+    volume_sectors = (LBA_t)(length / sector_bytes);
+    const MKFS_PARM format = {
+        .fmt = FM_FAT32 | FM_SFD,
+        .n_fat = 2,
+        .au_size = length < INT64_C(1073741824) ? 512 : 4096,
+    };
+    FATFS fat;
+    int result = f_mkfs("0:", &format, buffer, chunk_bytes);
+    if (result == FR_OK)
+        result = f_mount(&fat, "0:", 1);
+    if (result == FR_OK && fat.fs_type != FS_FAT32)
+        result = FR_NO_FILESYSTEM;
+    if (result == FR_OK)
+        result = windows_iso_walk(iso, copy_setup_file, buffer);
+    if (result == FR_OK)
+        result = verify_setup_source(&info);
+    if (result == FR_OK)
+        result = mark_setup_source();
+    if (result == FR_OK && fsync(destination))
+        result = FR_DISK_ERR;
+    f_mount(NULL, "0:", 0);
+    disk_fd = -1;
+    pthread_mutex_unlock(&volume_lock);
+    free(buffer);
+    return result;
+}
+
+static jint write_parts(JNIEnv *env, jint output, jlong offset, jlong length,
+                        jintArray parts, int replace_existing) {
     struct stat destination;
     if (!parts || !volume_bounds(output, offset, length, &destination))
         return -1;
@@ -172,14 +272,16 @@ JNIEXPORT jint JNICALL Java_com_example_winavf_WindowsSetupDisk_writeParts(
     int result = f_mount(&fat, "0:", 1);
     if (result == FR_OK && fat.fs_type != FS_FAT32) result = FR_NO_FILESYSTEM;
     char name[24];
-    // Only the two known source entries may be replaced. New names use CREATE_NEW.
-    for (int part = 0; part < 2 && result == FR_OK; ++part) {
-        part_name(name, part);
-        result = check_replaceable_source(name, part);
-    }
-    for (int part = 0; part < 2 && result == FR_OK; ++part) {
-        part_name(name, part);
-        result = f_unlink(name);
+    if (replace_existing) {
+        // Before unlinking, verify both entries belong to the legacy staging layout.
+        for (int part = 0; part < 2 && result == FR_OK; ++part) {
+            part_name(name, part);
+            result = check_replaceable_source(name, part);
+        }
+        for (int part = 0; part < 2 && result == FR_OK; ++part) {
+            part_name(name, part);
+            result = f_unlink(name);
+        }
     }
     for (int part = 0; part < count && result == FR_OK; ++part) {
         part_name(name, part);
@@ -189,6 +291,80 @@ JNIEXPORT jint JNICALL Java_com_example_winavf_WindowsSetupDisk_writeParts(
         part_name(name, part);
         result = write_or_verify(fds[part], sizes[part], name, buffer, 1);
     }
+    f_mount(NULL, "0:", 0);
+    disk_fd = -1;
+    pthread_mutex_unlock(&volume_lock);
+    free(buffer);
+    return result;
+}
+
+JNIEXPORT jint JNICALL Java_com_example_winavf_WindowsSetupDisk_writeParts(
+        JNIEnv *env, jclass clazz, jint output, jlong offset, jlong length, jintArray parts) {
+    (void)clazz;
+    return write_parts(env, output, offset, length, parts, 1);
+}
+
+JNIEXPORT jint JNICALL Java_com_example_winavf_WindowsSetupDisk_writeNewParts(
+        JNIEnv *env, jclass clazz, jint output, jlong offset, jlong length, jintArray parts) {
+    (void)clazz;
+    return write_parts(env, output, offset, length, parts, 0);
+}
+
+JNIEXPORT jint JNICALL Java_com_example_winavf_WindowsSetupDisk_createSource(
+        JNIEnv *env, jclass clazz, jint iso, jint output, jlong offset, jlong length) {
+    (void)env;
+    (void)clazz;
+    return windows_setup_create_source(iso, output, offset, length);
+}
+
+JNIEXPORT jint JNICALL Java_com_example_winavf_WindowsSetupDisk_stageIsoBootRuntime(
+        JNIEnv *env, jclass clazz, jint output, jlong offset, jlong length,
+        jint wim, jint loader, jint bcd, jint firmware) {
+    (void)env;
+    (void)clazz;
+    const int input[] = {wim, loader, bcd, firmware};
+    const char *const paths[] = {
+        "/SOURCES/BOOT.WIM", "/EFI/BOOT/BOOTAA64.EFI", "/EFI/MICROSOFT/BOOT/BCD",
+        "/EFI/EDK2/QEMU_EFI.FD",
+    };
+    const off_t limits[] = {INT64_C(1) << 31, 1024 * 1024, 1024 * 1024, 2 * 1024 * 1024};
+    off_t sizes[sizeof(input) / sizeof(input[0])];
+    struct stat target;
+    if (!volume_bounds(output, offset, length, &target))
+        return FR_INVALID_PARAMETER;
+    for (size_t i = 0; i < sizeof(input) / sizeof(input[0]); ++i) {
+        struct stat file;
+        if (fstat(input[i], &file) || !S_ISREG(file.st_mode) || file.st_size <= 0 ||
+            file.st_size > limits[i] || (file.st_dev == target.st_dev && file.st_ino == target.st_ino))
+            return FR_INVALID_PARAMETER;
+        sizes[i] = file.st_size;
+    }
+    BYTE *buffer = malloc(2 * chunk_bytes);
+    if (!buffer)
+        return FR_NOT_ENOUGH_CORE;
+    pthread_mutex_lock(&volume_lock);
+    disk_fd = output;
+    volume_offset = offset;
+    volume_sectors = (LBA_t)(length / sector_bytes);
+    FATFS fat;
+    int result = f_mount(&fat, "0:", 1);
+    if (result == FR_OK && fat.fs_type != FS_FAT32)
+        result = FR_NO_FILESYSTEM;
+    if (result == FR_OK)
+        result = f_rename(paths[1], "/EFI/BOOT/WINORIG.EFI");
+    // U-Boot reads this guest UEFI firmware before starting Windows Boot Manager.
+    if (result == FR_OK)
+        result = f_mkdir("/EFI/EDK2");
+    for (size_t i = 0; i < sizeof(input) / sizeof(input[0]) && result == FR_OK; ++i) {
+        if (i == 0 || i == 2)
+            result = f_unlink(paths[i]);
+        if (result == FR_OK)
+            result = write_or_verify(input[i], sizes[i], paths[i], buffer, 0);
+        if (result == FR_OK)
+            result = write_or_verify(input[i], sizes[i], paths[i], buffer, 1);
+    }
+    if (result == FR_OK && fsync(output))
+        result = FR_DISK_ERR;
     f_mount(NULL, "0:", 0);
     disk_fd = -1;
     pthread_mutex_unlock(&volume_lock);

@@ -11,6 +11,14 @@ import java.util.zip.CRC32;
 /** Checks both retained first-boot metadata and a read-only snapshot of the installed test disk. */
 public final class WindowsSetupLayoutTest {
     public static void main(String[] args) throws Exception {
+        var generated = WindowsSetupLayout.freshGeometry();
+        if (WindowsSetupLayout.verify(generated.prefix(), generated.entries(), generated.tail()) != 0)
+            throw new AssertionError("generated GPT differs from the verified fresh layout");
+        if (args.length == 0) {
+            System.out.println("WINDOWS_SETUP_LAYOUT_PASS generatedFresh=1 retainedFixtures=0");
+            return;
+        }
+        if (args.length != 3) throw new IllegalArgumentException("Pass the template, geometry and installed metadata");
         byte[] source = new byte[34 * 512];
         try (var template = Files.newInputStream(Path.of(args[0]))) {
             if (template.readNBytes(source, 0, source.length) != source.length) throw new AssertionError("template");

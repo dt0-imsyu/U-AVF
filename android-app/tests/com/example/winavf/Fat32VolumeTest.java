@@ -44,6 +44,9 @@ public final class Fat32VolumeTest {
             // Missing names return null rather than throwing.
             check(volume.readFile("EFI", "BOOT", "DOESNOT.EXIST") == null, "missing file returns null");
             check(volume.readFile("NOPE") == null, "missing directory returns null");
+            check(volume.exists("EFI", "BOOT", "BOOTAA64.EFI"), "file existence at nested path");
+            check(!volume.exists("EFI", "BOOT", "DOESNOT.EXIST"), "missing file member");
+            check(volume.exists("EFI", "BOOT"), "directory existence at nested path");
 
             // Root lookup is what the witness audit uses.
             byte[] absent = volume.readRootFile("SETUPACT", "LOG", 16 * 1024 * 1024);

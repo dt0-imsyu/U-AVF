@@ -1,4 +1,5 @@
-package com.example.winavf;
+package com.example.winavf.input;
+
 import java.util.ArrayList;
 import java.util.List;
 

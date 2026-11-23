@@ -50,7 +50,8 @@ if ($LASTEXITCODE) { throw 'wimlib Android build failed' }
 $linkArgs = @('--target=aarch64-linux-android35','-fPIC','-O2','-shared','-Wall','-Wextra','-Werror',
     '-Wl,-z,relro,-z,now','-Wl,-z,max-page-size=16384','-Wl,--exclude-libs,ALL',
     '-Wl,-soname,libuavf_windows_wim.so',"-I$source/include",
-    "$PSScriptRoot/windows_wim_split_jni.c","$source/.libs/libwim.a",'-o',"$out/libuavf_windows_wim.so")
+    "$PSScriptRoot/windows_wim_split_jni.c","$PSScriptRoot/windows_boot_wim.c",
+    "$source/.libs/libwim.a",'-o',"$out/libuavf_windows_wim.so")
 & "$env:UAVF_WIMLIB_NDK_BIN/clang.exe" @linkArgs
 if ($LASTEXITCODE) { throw 'WIM JNI build failed' }
 Copy-Item -LiteralPath "$source/COPYING.LGPL" -Destination "$out/wimlib-COPYING.LGPL"

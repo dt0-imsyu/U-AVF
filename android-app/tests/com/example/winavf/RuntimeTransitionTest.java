@@ -38,6 +38,13 @@ public final class RuntimeTransitionTest {
         t.keepWaiting(96000);check(!t.waiting(97000),"keep waiting resets inactivity not elapsed");
         check(t.elapsed(97000)==92,"elapsed never reset");
         t.failure("Test failure",98000);t.desktop(99000);check(t.visible(),"frame cannot hide error");
+        t.begin(RuntimeTransition.Mode.BOOT,0);
+        check(!t.waiting(119999,true) && t.waiting(120000,true),"Windows startup waits two minutes");
+        t.begin(RuntimeTransition.Mode.REBOOT,0);
+        t.setWindowsPostInstall(true);
+        check(!t.waiting(299999,true) && t.waiting(300000,true),"post-install Windows restart waits five minutes");
+        t.begin(RuntimeTransition.Mode.BOOT,0);
+        check(!t.windowsPostInstall() && t.waiting(120000,true),"normal window after post-install startup");
         t.begin(RuntimeTransition.Mode.REBOOT,100000);t.failure("Rejected",100001);
         check(t.operation()==RuntimeTransition.Mode.REBOOT,"error retains restart intent and rows");
         int current=t.begin(RuntimeTransition.Mode.BOOT,110000);

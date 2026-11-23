@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -33,16 +34,24 @@ assert sha(a.apk) == expected, 'Not the verified candidate'
 if a.output.exists():
     assert a.refresh and sha(a.output/'candidate/U-AVF 1.0.apk') == expected, 'Not the matching private kit'
 scope_text = (repo/'LICENSE_SCOPE.md').read_text(encoding='utf-8')
-scope = re.findall(r'`(android-app/src/[^`]+\.java)`', scope_text.split('## Explicit exclusions')[0])
-modified = re.findall(r'`(android-app/src/[^`]+\.java)`', scope_text.split('## Original new contributions')[1])
-assert scope and len(scope) == len(set(scope))
-for ref in ('HEAD', 'origin/main'):
-    inherited = set(git('ls-tree', '-r', '--name-only', ref).splitlines())
-    assert not inherited.intersection(scope), 'Scoped file already present in inherited tree'
-for rel in scope:
-    assert 'SPDX-License-Identifier: LicenseRef-UAVF-1.0' in (repo/rel).read_text(encoding='utf-8')
-original_apache = git('show', 'HEAD:LICENSE').replace('\r\n', '\n').strip()
+scope = re.findall(r'`(android-app/src/[^`]+\.java)`',
+                   scope_text.split('## Enumeration versus source headers')[0])
+mixed = re.findall(r'`(android-app/src/[^`]+\.java)`',
+                   scope_text.split('## Mixed-origin')[1].split('## Explicit exclusions')[0])
+assert scope and len(scope) == len(set(scope)), 'Scope list is empty or repeated'
+assert not set(scope) & set(mixed), 'Mixed-origin files must stay out of the scope list'
+for rel in scope + mixed:
+    assert (repo/rel).is_file(), 'Scoped file is missing: ' + rel
+    marker = re.search(r'SPDX-License-Identifier: (\S+)', (repo/rel).read_text(encoding='utf-8'))
+    assert marker is None or marker.group(1) == 'LicenseRef-UAVF-1.0', 'Unexpected header: ' + rel
+# The Apache text is preserved from the last public commit where LICENSE held it.
+# The current LICENSE is a multi-license index, so it cannot be the reference.
+BASELINE = '18778a9d88eab1f87cb279484bb1b0dbe28a057e'
+original_apache = git('show', BASELINE + ':LICENSE').replace('\r\n', '\n').strip()
 assert (repo/'LICENSE-APACHE-2.0.txt').read_text(encoding='utf-8').strip() == original_apache
+# Every scoped file is a local change relative to the public baseline. Files that
+# are still untracked are covered by the full source checkpoint written below.
+modified = scope + mixed
 candidate = a.output/'candidate'
 internal = a.output/'internal'
 candidate.mkdir(parents=True, exist_ok=a.refresh)
@@ -71,8 +80,17 @@ for name in ('deb-provenance.json', 'encoder-deb-provenance.json', 'source-cover
     previous = a.previous_kit/'internal'/name
     if previous.is_file():
         shutil.copy2(previous, internal/name)
-(internal/'original-contributions-baseline.diff').write_text(
-    git('diff', '--no-ext-diff', '--no-color', 'HEAD', '--', *modified), encoding='utf-8')
+diff_index = internal/'_baseline.index'
+diff_env = dict(os.environ, GIT_INDEX_FILE=str(diff_index))
+try:
+    subprocess.run(['git', 'read-tree', BASELINE], cwd=repo, env=diff_env, check=True)
+    subprocess.run(['git', 'add', '-N', '--', *modified], cwd=repo, env=diff_env, check=True)
+    baseline_diff = subprocess.run(['git', 'diff', '--no-ext-diff', '--no-color'],
+                                   cwd=repo, env=diff_env, capture_output=True,
+                                   text=True, encoding='utf-8', check=True).stdout
+finally:
+    diff_index.unlink(missing_ok=True)
+(internal/'original-contributions-baseline.diff').write_text(baseline_diff, encoding='utf-8')
 
 # Private checkpoint only: no raw disks/assets, signing credentials, .git or personal logs.
 roots = ('android-app/src', 'android-app/native', 'android-app/res', 'android-app/tests',

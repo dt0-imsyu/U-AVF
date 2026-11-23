@@ -33,6 +33,13 @@ public final class VmLifecycleTest {
         check(!recreated.beginCompatibilityProbe());
         recreated.endStorageMutation();
         check(recreated.beginStart());
+        check(recreated.cancelUnattachedStart());
+        check(recreated.state() == VmLifecycle.State.STOPPING);
+        check(!recreated.beginStart());
+        check(recreated.stopped(null, "Launch cancelled"));
+        check(recreated.beginStart());
+        recreated.attach(current);
+        check(!recreated.cancelUnattachedStart());
         System.out.println("VM_LIFECYCLE_TEST=PASS");
     }
 }

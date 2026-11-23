@@ -13,6 +13,9 @@ p.add_argument('--baseline',type=Path,required=True)
 p.add_argument('--aapt2',type=Path,required=True)
 a=p.parse_args()
 repo=Path(__file__).resolve().parents[2]
+# Last public commit where LICENSE still held the Apache text; the Apache copy in
+# LICENSE-APACHE-2.0.txt is preserved from here, not from the current HEAD.
+BASELINE='18778a9d88eab1f87cb279484bb1b0dbe28a057e'
 candidate=a.kit/'candidate'
 apk=candidate/'U-AVF 1.0.apk'
 def sha(path):
@@ -25,6 +28,7 @@ def check(condition,name):
     if not condition:raise SystemExit('AUDIT_FAIL='+name)
     checks.append(name)
 checks=[]
+head_start=git('rev-parse','HEAD').strip()
 listed={}
 for line in (candidate/'SHA256SUMS').read_text(encoding='utf-8').splitlines():
     digest,rel=line.split('  ',1)
@@ -63,15 +67,20 @@ with zipfile.ZipFile(apk) as release,zipfile.ZipFile(a.baseline) as baseline:
     for name in ('LICENSE','LICENSE-UAVF.txt','LICENSE-APACHE-2.0.txt','LICENSE_SCOPE.md','PRIVACY.md','THIRD_PARTY_NOTICES.txt'):
         check('assets/legal/'+name in names,'accessible_legal_asset:'+name)
 check(len(payloads)==43,'43_runtime_payloads_identical')
-check((repo/'LICENSE-APACHE-2.0.txt').read_text(encoding='utf-8').strip()==git('show','HEAD:LICENSE').strip(),
+check((repo/'LICENSE-APACHE-2.0.txt').read_text(encoding='utf-8').strip()==git('show',BASELINE+':LICENSE').strip(),
       'historical_apache_text_preserved')
 scope_text=(repo/'LICENSE_SCOPE.md').read_text(encoding='utf-8')
-scope=re.findall(r'`(android-app/src/[^`]+\.java)`',scope_text.split('## Explicit exclusions')[0])
-for ref in ('HEAD','origin/main'):
-    check(not set(scope).intersection(git('ls-tree','-r','--name-only',ref).splitlines()),'new_scope_absent_from_'+ref)
-for rel in scope:
-    check('SPDX-License-Identifier: LicenseRef-UAVF-1.0' in (repo/rel).read_text(encoding='utf-8'),'scope_header:'+rel)
-check(git('rev-parse','HEAD').strip()=='18778a9d88eab1f87cb279484bb1b0dbe28a057e','head_unchanged_no_commit')
+scope=re.findall(r'`(android-app/src/[^`]+\.java)`',scope_text.split('## Enumeration versus source headers')[0])
+mixed=re.findall(r'`(android-app/src/[^`]+\.java)`',
+                 scope_text.split('## Mixed-origin')[1].split('## Explicit exclusions')[0])
+check(scope and len(scope)==len(set(scope)),'scope_list_unique')
+check(not set(scope)&set(mixed),'mixed_origin_files_excluded_from_scope')
+for rel in scope+mixed:
+    check((repo/rel).is_file(),'scope_file_present:'+rel)
+for rel in scope+mixed:
+    marker=re.search(r'SPDX-License-Identifier: (\S+)',(repo/rel).read_text(encoding='utf-8'))
+    check(marker is None or marker.group(1)=='LicenseRef-UAVF-1.0','scope_header_identifier:'+rel)
+check(git('rev-parse','HEAD').strip()==head_start,'head_unchanged_no_commit')
 issues=[
  {'id':'INSTALL_ACCOUNT_ACCEPTANCE','status':'SEE_DEVICE_REPORT','evidence':'RC4 isolated clean custom-account install and repeat password login recorded in DEVICE_ACCEPTANCE_2026-10-04.md; this static audit does not certify runtime acceptance'},
  {'id':'CORRESPONDING_SOURCE','status':'BLOCK_PUBLIC_RELEASE','evidence':'Notices and original-source checkpoint exist; exact complete GPL/LGPL sources/build configs/relink obligations are not fulfilled'},

@@ -2,24 +2,41 @@
 param(
     [string] $OutputDir = '',
     [string] $MavkRuntimeDir = '',
-    [string] $MavkNativeLibrary = ''
+    [string] $MavkNativeLibrary = '',
+    [string] $BootWrapper = '',
+    [string] $PlatformAssetsDir = '',
+    [string] $SdkDir = $env:ANDROID_HOME,
+    [string] $JdkDir = $env:JAVA_HOME
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$sdk = Join-Path $env:LOCALAPPDATA 'Android\Sdk'
+if (-not $SdkDir) { $SdkDir = Join-Path $env:LOCALAPPDATA 'Android\Sdk' }
+if (-not $JdkDir) { $JdkDir = Join-Path $env:ProgramFiles 'Android\Android Studio\jbr' }
+$sdk = $SdkDir
 $buildTools = Join-Path $sdk 'build-tools\36.0.0'
 $androidJar = Join-Path $sdk 'platforms\android-36\android.jar'
 $ndkBin = Join-Path $sdk 'ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin'
-$javaBin = 'C:\Program Files\Android\Android Studio\jbr\bin'
+$javaBin = Join-Path $JdkDir 'bin'
 $env:JAVA_HOME = Split-Path -Parent $javaBin
 $env:Path = "$javaBin;$env:Path"
+$wrapper = $BootWrapper
+if (-not $wrapper) {
+    $wrapper = Join-Path $root '..\..\handoff-compact-2026-08-23\handoff-compact-2026-08-23\winavf-test\out\assets\u-boot-wrapper-v24.Image'
+}
+if (-not (Test-Path -LiteralPath $wrapper -PathType Leaf)) {
+    throw 'Missing U-Boot wrapper. Supply u-boot-wrapper-v24.Image using -BootWrapper.'
+}
+if ((Get-FileHash -LiteralPath $wrapper -Algorithm SHA256).Hash -ne '93EDA7C4BD54C33F85ADA6F05158C74EC6F5C3232F5CBA73846E5B442895F234') {
+    throw 'U-Boot wrapper SHA-256 mismatch'
+}
 $out = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $root 'out' }
 $generated = Join-Path $out 'generated'
 New-Item -ItemType Directory -Force -Path $out, (Join-Path $out 'classes'), (Join-Path $out 'assets'), (Join-Path $out 'dex'), $generated | Out-Null
 $packageAssets = Join-Path $out ('apk-assets-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 New-Item -ItemType Directory -Force -Path $packageAssets | Out-Null
 $appAssets = Join-Path $root 'assets'
+if (-not $PlatformAssetsDir) { $PlatformAssetsDir = $appAssets }
 if ([bool]$MavkRuntimeDir -ne [bool]$MavkNativeLibrary) {
     throw 'Mavk Live payload and matching native renderer must be supplied together'
 }
@@ -38,7 +55,7 @@ if ($MavkRuntimeDir) {
     Copy-Item -LiteralPath $mavkPrefix -Destination $packageAssets
     Copy-Item -LiteralPath $mavkManifestPath -Destination $packageAssets
 }
-if (Test-Path -LiteralPath $appAssets) {
+if (Test-Path -LiteralPath $PlatformAssetsDir -PathType Container) {
     # Ship only the user-facing Linux paths: the validated temporary VirGL
     # profile and the guided-install platform. Keep diagnostic A/B images in
     # the source tree, but out of the public APK.
@@ -49,12 +66,14 @@ if (Test-Path -LiteralPath $appAssets) {
         'uavf-install-platform-prefix-gdm-share.img'
     )
     foreach ($assetName in $productAssets) {
-        $assetPath = Join-Path $appAssets $assetName
+        $assetPath = Join-Path $PlatformAssetsDir $assetName
         if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
             throw "Missing required product asset: $assetName"
         }
         Copy-Item -LiteralPath $assetPath -Destination (Join-Path $packageAssets $assetName) -Force
     }
+} else {
+    throw "Missing platform asset directory: $PlatformAssetsDir"
 }
 $productUiAssets=Join-Path $appAssets 'product-ui'
 if(Test-Path -LiteralPath $productUiAssets) {
@@ -74,9 +93,9 @@ foreach ($controlAsset in @('uavf-control.py','uavf-control.socket','uavf-contro
 }
 & python (Join-Path $root '..\tools\linux-gnome\audit-product-display-payload.py') $installPrefix
 if ($LASTEXITCODE -ne 0) { throw 'Product display payload differs from current guest runtime sources; rebuild the initrd first.' }
-$mainActivity = Get-Content -LiteralPath (Join-Path $root 'src\com\example\winavf\MainActivity.java') -Raw
-$prefixMatch = [regex]::Match($mainActivity, 'UBUNTU_INSTALL_PLATFORM_PREFIX_SHA256\s*=\s*"([0-9A-Fa-f]{64})"')
-$espMatch = [regex]::Match($mainActivity, 'UBUNTU_INSTALL_PLATFORM_ESP_SHA256\s*=\s*"([0-9A-Fa-f]{64})"')
+$workspaceMedia = Get-Content -LiteralPath (Join-Path $root 'src\com\example\winavf\UbuntuWorkspaceMedia.java') -Raw
+$prefixMatch = [regex]::Match($workspaceMedia, 'UBUNTU_INSTALL_PLATFORM_PREFIX_SHA256\s*=\s*"([0-9A-Fa-f]{64})"')
+$espMatch = [regex]::Match($workspaceMedia, 'UBUNTU_INSTALL_PLATFORM_ESP_SHA256\s*=\s*"([0-9A-Fa-f]{64})"')
 if (-not $prefixMatch.Success -or -not $espMatch.Success) { throw 'Ubuntu install prefix SHA constants are missing' }
 if ((Get-FileHash -LiteralPath $installPrefix -Algorithm SHA256).Hash -ne $prefixMatch.Groups[1].Value) {
     throw 'Ubuntu install platform prefix does not match its embedded SHA-256 constant'
@@ -99,8 +118,6 @@ try {
 if ($actualEspSha -ne $espMatch.Groups[1].Value) {
     throw "Ubuntu install ESP range does not match its embedded SHA-256 constant: $actualEspSha"
 }
-$wrapper = Join-Path $root '..\..\handoff-compact-2026-08-23\handoff-compact-2026-08-23\winavf-test\out\assets\u-boot-wrapper-v24.Image'
-if ((Get-FileHash -LiteralPath $wrapper -Algorithm SHA256).Hash -ne '93EDA7C4BD54C33F85ADA6F05158C74EC6F5C3232F5CBA73846E5B442895F234') { throw 'U-Boot wrapper SHA-256 mismatch' }
 Copy-Item -LiteralPath $wrapper -Destination (Join-Path $packageAssets 'u-boot-wrapper-v24.Image') -Force
 $source = Join-Path $root 'kernel-first\console-binary-echo.S'
 & (Join-Path $ndkBin 'clang.exe') --target=aarch64-none-elf -c $source -o (Join-Path $out 'console-binary-echo.o')

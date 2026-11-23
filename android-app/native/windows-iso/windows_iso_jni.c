@@ -25,6 +25,19 @@ JNIEXPORT jlong JNICALL Java_com_example_winavf_WindowsInstallIso_openPayloadFd(
     return (jlong)(uintptr_t)windows_iso_payload_open(fd, boot);
 }
 
+JNIEXPORT jlong JNICALL Java_com_example_winavf_WindowsInstallIso_openFileFd(
+        JNIEnv *env, jclass clazz, jint fd, jstring path) {
+    (void)clazz;
+    if (!path)
+        return 0;
+    const char *name = (*env)->GetStringUTFChars(env, path, NULL);
+    if (!name)
+        return 0;
+    struct windows_iso_payload *file = windows_iso_file_open(fd, name);
+    (*env)->ReleaseStringUTFChars(env, path, name);
+    return (jlong)(uintptr_t)file;
+}
+
 JNIEXPORT jlong JNICALL Java_com_example_winavf_WindowsInstallIso_payloadSize(
         JNIEnv *env, jclass clazz, jlong value) {
     (void)env;

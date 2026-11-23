@@ -42,14 +42,16 @@ static int input_read(udfread_block_input *ops, uint32_t lba, void *output,
     return (int)blocks;
 }
 
-static int find_name(UDFDIR *directory, const char *expected, char name[32]) {
+enum { MAX_ISO_COMPONENT = 255, MAX_ISO_PATH = 4096 };
+
+static int find_name(UDFDIR *directory, const char *expected, char name[MAX_ISO_COMPONENT + 1]) {
     struct udfread_dirent entry;
     int found = 0;
     udfread_rewinddir(directory);
     while (udfread_readdir(directory, &entry)) {
         if (strcasecmp(entry.d_name, expected) != 0)
             continue;
-        if (found || strlen(entry.d_name) >= 32)
+        if (found || strlen(entry.d_name) > MAX_ISO_COMPONENT)
             return 0;
         strcpy(name, entry.d_name);
         found = 1;
@@ -58,12 +60,12 @@ static int find_name(UDFDIR *directory, const char *expected, char name[32]) {
 }
 
 static UDFDIR *open_directory(UDFDIR *parent, const char *expected) {
-    char name[32];
+    char name[MAX_ISO_COMPONENT + 1];
     return find_name(parent, expected, name) ? udfread_opendir_at(parent, name) : NULL;
 }
 
 static UDFFILE *open_file(UDFDIR *parent, const char *expected) {
-    char name[32];
+    char name[MAX_ISO_COMPONENT + 1];
     return find_name(parent, expected, name) ? udfread_file_openat(parent, name) : NULL;
 }
 
@@ -116,7 +118,7 @@ static enum windows_iso_status setup_input(int fd, struct iso_input *input) {
     if (fstat(fd, &stat) != 0 || !S_ISREG(stat.st_mode) || stat.st_size <= 0)
         return WINDOWS_ISO_UNSEEKABLE;
     if (stat.st_size % UDF_BLOCK_SIZE != 0 || stat.st_size / UDF_BLOCK_SIZE > UINT32_MAX)
-        return WINDOWS_ISO_INVALID_UDF;
+        return WINDOWS_ISO_INVALID_LENGTH;
 
     *input = (struct iso_input){{NULL, input_read, input_size}, fd, (uint32_t)(stat.st_size / UDF_BLOCK_SIZE)};
     return WINDOWS_ISO_OK;
@@ -171,7 +173,7 @@ struct windows_iso_payload {
     UDFFILE *file;
 };
 
-struct windows_iso_payload *windows_iso_payload_open(int fd, int boot) {
+static struct windows_iso_payload *open_volume(int fd) {
     struct windows_iso_payload *payload = calloc(1, sizeof(*payload));
     if (!payload)
         return NULL;
@@ -183,8 +185,75 @@ struct windows_iso_payload *windows_iso_payload_open(int fd, int boot) {
         return NULL;
     }
     payload->volume = udfread_init();
-    if (!payload->volume || udfread_open_input(payload->volume, &payload->input.ops) < 0)
-        goto failure;
+    if (!payload->volume || udfread_open_input(payload->volume, &payload->input.ops) < 0) {
+        windows_iso_payload_close(payload);
+        return NULL;
+    }
+    return payload;
+}
+
+static int walk_directory(struct windows_iso_payload *source, UDFDIR *directory,
+                          char path[MAX_ISO_PATH + 1], size_t used, unsigned depth,
+                          windows_iso_visitor visitor, void *state) {
+    if (depth > 24)
+        return -1;
+    struct udfread_dirent entry;
+    while (udfread_readdir(directory, &entry)) {
+        const char *name = entry.d_name;
+        if (!strcmp(name, ".") || !strcmp(name, ".."))
+            continue;
+        size_t length = strnlen(name, MAX_ISO_COMPONENT + 1);
+        if (!length || length > MAX_ISO_COMPONENT || used + length + 1 > MAX_ISO_PATH ||
+            strchr(name, '/') || strchr(name, '\\'))
+            return -1;
+        memcpy(path + used, name, length + 1);
+        int result;
+        if (entry.d_type == UDF_DT_DIR) {
+            result = visitor(path, NULL, state);
+            if (!result) {
+                UDFDIR *child = udfread_opendir_at(directory, name);
+                if (!child)
+                    return -1;
+                path[used + length] = '/';
+                result = walk_directory(source, child, path, used + length + 1, depth + 1,
+                                        visitor, state);
+                udfread_closedir(child);
+            }
+        } else if (entry.d_type == UDF_DT_REG) {
+            source->file = udfread_file_openat(directory, name);
+            if (!source->file)
+                return -1;
+            result = visitor(path, source, state);
+            udfread_file_close(source->file);
+            source->file = NULL;
+        } else {
+            return -1;
+        }
+        if (result)
+            return result;
+    }
+    return 0;
+}
+
+int windows_iso_walk(int fd, windows_iso_visitor visitor, void *state) {
+    if (!visitor)
+        return -1;
+    struct windows_iso_payload *source = open_volume(fd);
+    if (!source)
+        return -1;
+    UDFDIR *root = udfread_opendir(source->volume, "/");
+    char path[MAX_ISO_PATH + 1];
+    int result = root ? walk_directory(source, root, path, 0, 0, visitor, state) : -1;
+    if (root)
+        udfread_closedir(root);
+    windows_iso_payload_close(source);
+    return result;
+}
+
+struct windows_iso_payload *windows_iso_payload_open(int fd, int boot) {
+    struct windows_iso_payload *payload = open_volume(fd);
+    if (!payload)
+        return NULL;
     UDFDIR *root = udfread_opendir(payload->volume, "/");
     UDFDIR *sources = root && arm64_boot_loader(root) ? open_directory(root, "sources") : NULL;
     if (sources) {
@@ -196,7 +265,41 @@ struct windows_iso_payload *windows_iso_payload_open(int fd, int boot) {
     if (root) udfread_closedir(root);
     if (payload->file)
         return payload;
-failure:
+    windows_iso_payload_close(payload);
+    return NULL;
+}
+
+struct windows_iso_payload *windows_iso_file_open(int fd, const char *path) {
+    if (!path || !*path || strnlen(path, MAX_ISO_PATH + 1) > MAX_ISO_PATH)
+        return NULL;
+
+    struct windows_iso_payload *payload = open_volume(fd);
+    if (!payload)
+        return NULL;
+    UDFDIR *directory = udfread_opendir(payload->volume, "/");
+    while (directory) {
+        const char *end = strchr(path, '/');
+        size_t length = end ? (size_t)(end - path) : strlen(path);
+        if (!length || length > MAX_ISO_COMPONENT || memchr(path, '\\', length)
+            || (length == 1 && path[0] == '.')
+            || (length == 2 && path[0] == '.' && path[1] == '.'))
+            break;
+        char component[MAX_ISO_COMPONENT + 1];
+        memcpy(component, path, length);
+        component[length] = '\0';
+        if (!end) {
+            payload->file = open_file(directory, component);
+            break;
+        }
+        UDFDIR *child = open_directory(directory, component);
+        udfread_closedir(directory);
+        directory = child;
+        path = end + 1;
+    }
+    if (directory)
+        udfread_closedir(directory);
+    if (payload->file)
+        return payload;
     windows_iso_payload_close(payload);
     return NULL;
 }

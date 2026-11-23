@@ -1,14 +1,22 @@
+[CmdletBinding()]
+param(
+    [string]$Toolchain = $env:LLVM_MINGW_ROOT,
+    [string]$OutputDir = (Join-Path $PSScriptRoot 'out')
+)
+
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $PSCommandPath
-$toolchain = 'C:\Users\denis\MainProjects\win11ontab\tools\toolchains\llvm-mingw-20260826-ucrt-x86_64'
-$gcc = Join-Path $toolchain 'bin\aarch64-w64-mingw32-gcc.exe'
-$objdump = Join-Path $toolchain 'bin\llvm-objdump.exe'
-$out = Join-Path $root 'out'
+$root = $PSScriptRoot
+if (-not $Toolchain) {
+    $Toolchain = Join-Path $root '../../tools/toolchains/llvm-mingw-20260826-ucrt-x86_64'
+}
+$gcc = Join-Path $Toolchain 'bin/aarch64-w64-mingw32-gcc.exe'
+$objdump = Join-Path $Toolchain 'bin/llvm-objdump.exe'
+$out = [IO.Path]::GetFullPath($OutputDir)
 $exe = Join-Path $out 'WinAvfInput.exe'
 
 if (!(Test-Path -LiteralPath $gcc) -or !(Test-Path -LiteralPath $objdump)) {
-    throw 'Required ARM64 llvm-mingw toolchain is missing.'
+    throw 'ARM64 llvm-mingw not found. Set LLVM_MINGW_ROOT or pass -Toolchain.'
 }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 & $gcc -Os -s -nostdlib -fno-stack-protector -mwindows `

@@ -3,6 +3,30 @@
 # unit therefore lets Ubuntu's own systemd create the AF_VSOCK listener after
 # switch_root, avoiding a custom bare-metal ELF in the early userspace.
 set -eu
+# Suppress the stock Try/Install window only when booting the disposable
+# desktop. Installer media carries its own autoinstall configuration.
+case " $(cat /proc/cmdline) " in
+  *" boot=casper "*)
+    rootfs="${rootmnt:-/root}"
+    if [ ! -f /autoinstall.yaml ] && [ ! -f "$rootfs/autoinstall.yaml" ]; then
+      if ! grep -Eq '(^| )autoinstall( |$)' /proc/cmdline; then
+        for directory in "$rootfs/etc/xdg/autostart" "$rootfs"/home/*/.config/autostart; do
+          [ -d "$directory" ] || continue
+          for entry in "$directory"/*.desktop; do
+            [ -f "$entry" ] || continue
+            if ! grep -Eq '^Exec=.*(ubuntu-desktop-bootstrap|ubuntu-desktop-installer).*--try-or-install' "$entry"; then
+              continue
+            fi
+            # Replace the directory entry, not a symlink target in the snap.
+            hidden="$directory/.uavf-hidden-installer.$$"
+            printf '[Desktop Entry]\nType=Application\nName=Ubuntu Setup\nHidden=true\n' > "$hidden"
+            mv -f "$hidden" "$entry"
+          done
+        done
+      fi
+    fi
+    ;;
+esac
 # The bridge reads the X11 root window.  On a Wayland session that root can
 # remain black while Mutter renders the real desktop elsewhere.  Prefer an
 # Xorg GDM session for this disposable frame-capture experiment only.

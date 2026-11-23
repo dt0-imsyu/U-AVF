@@ -14,7 +14,7 @@ import socket
 
 _CAPTURE_BACKEND_LOGGED = set()
 
-def find_display(verbose=False):
+def find_display(verbose=False, *, allow_greeter=False):
     # Match a logged-in X11 compositor to its GDM Xorg launcher, not to a
     # guessed display number (or an independently started Xvnc desktop).
     processes = []
@@ -36,9 +36,17 @@ def find_display(verbose=False):
             processes.append((comm, uid, session, command))
         except (OSError, ValueError):
             continue
-    for comm, uid, session, _ in processes:
-        if comm not in ("gnome-shell", "kwin_x11") or uid < 1000 or session.get("XDG_SESSION_TYPE") != "x11":
+    for comm, uid, session, _ in sorted(processes, key=lambda entry: entry[1] < 1000):
+        if comm not in ("gnome-shell", "kwin_x11") or session.get("XDG_SESSION_TYPE") != "x11":
             continue
+        if uid < 1000:
+            if not allow_greeter or uid == 0 or comm != "gnome-shell":
+                continue
+            try:
+                if pwd.getpwuid(uid).pw_name != "gdm":
+                    continue
+            except KeyError:
+                continue
         display = session.get("DISPLAY", "")
         authority = session.get("XAUTHORITY", "")
         runtime = session.get("XDG_RUNTIME_DIR", "")
@@ -1232,7 +1240,7 @@ def frame(sequence, encoder):
 INPUT_PACKET = struct.Struct("<4sBBHii")
 
 
-def input_loop():
+def input_loop(*, allow_greeter=False):
     """Read only host-owned fixed-size input records from the socket stdin."""
     try:
         x11 = ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
@@ -1251,7 +1259,7 @@ def input_loop():
                                             ctypes.c_int, ctypes.c_ulong]
         display = None
         for _ in range(180):
-            env = find_display()
+            env = find_display(allow_greeter=allow_greeter)
             if env and env.get("DISPLAY"):
                 if "XAUTHORITY" in env:
                     os.environ["XAUTHORITY"] = env["XAUTHORITY"]
@@ -1320,7 +1328,8 @@ def input_loop():
 
 
 if __name__ == "__main__":
-    threading.Thread(target=input_loop, name="winavf-input", daemon=True).start()
+    threading.Thread(target=input_loop, kwargs={"allow_greeter": True},
+                     name="winavf-input", daemon=True).start()
     try:
         target_fps = int(os.environ.get("UAVF_FRAME_TARGET_FPS", "60"))
     except ValueError:
@@ -1361,7 +1370,7 @@ if __name__ == "__main__":
         try:
             begin = time.monotonic()
             if direct_x11_capture:
-                env = find_display(sequence == 1)
+                env = find_display(sequence == 1, allow_greeter=True)
                 if env is None or not env.get("DISPLAY"):
                     raise RuntimeError("DISPLAY_RUNTIME_NOT_FOUND")
                 if motion_pattern_requested and motion_pattern is None:
@@ -1377,7 +1386,7 @@ if __name__ == "__main__":
                 computed = time.monotonic()
             else:
                 if rfb is None:
-                    env = find_display(sequence == 1)
+                    env = find_display(sequence == 1, allow_greeter=True)
                     if (env is None or not env.get("DISPLAY")
                             or not env.get("XAUTHORITY")
                             or not os.path.isfile(env["XAUTHORITY"])):

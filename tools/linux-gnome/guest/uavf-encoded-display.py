@@ -31,7 +31,7 @@ if '--session' not in sys.argv:
     # system-service GNOME session (which breaks logind/Snap).
     env=None
     for _ in range(180):
-        env=bridge.find_display()
+        env=bridge.find_display(allow_greeter=True)
         if env:
             candidate_uid=int(env['XDG_RUNTIME_DIR'].rsplit('/',1)[1])
             candidate_account=pwd.getpwuid(candidate_uid)
@@ -108,7 +108,7 @@ def send_packet(packet):
         except BlockingIOError:
             select.select([],[stream],[],min(.1,max(0,deadline-time.monotonic())))
 def read_input():
-    try: bridge.input_loop()
+    try: bridge.input_loop(allow_greeter=True)
     finally: stop.set()
 if not ctypes.CDLL('libX11.so.6').XInitThreads():
     raise RuntimeError('Xlib thread initialization failed')
