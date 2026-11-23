@@ -40,7 +40,7 @@ public final class VmRuntimeService extends Service {
 
     static boolean windowsSetupBusy() {
         WindowsSetupRuntime setup=windowsSetup;
-        return setup!=null && (setup.active() || setup.continueInstalled());
+        return setup!=null && (setup.active() || setup.continueInstalled() || setup.hasRetainedVm());
     }
 
     private void runWindowsSetup(WindowsSetupRuntime setup) {

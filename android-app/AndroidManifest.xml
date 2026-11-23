@@ -38,11 +38,32 @@
         </service>
         <activity android:name=".MainActivity" android:exported="true"
             android:launchMode="singleTop"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|uiMode|density">
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|uiMode|density" />
+        <!-- Keep launcher aliases out of MainActivity's task. Android may remove
+             a task whose launcher component is disabled during an icon change. -->
+        <activity android:name=".LauncherEntryActivity" android:exported="false"
+            android:taskAffinity="" android:noHistory="true" android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+        <activity-alias android:name=".LauncherBlue" android:targetActivity=".LauncherEntryActivity"
+            android:exported="true" android:icon="@drawable/ic_uavf_launcher_blue">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+        <activity-alias android:name=".LauncherGrey" android:targetActivity=".LauncherEntryActivity"
+            android:enabled="false" android:exported="true" android:icon="@drawable/ic_uavf_launcher_grey">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias android:name=".LauncherPurple" android:targetActivity=".LauncherEntryActivity"
+            android:enabled="false" android:exported="true" android:icon="@drawable/ic_uavf_launcher_purple">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
     </application>
 </manifest>

@@ -111,6 +111,17 @@ final class Fat32Volume implements AutoCloseable {
 
     /** Reads a file by path components, for example {@code readFile("EFI", "BOOT", "BCD")}. */
     byte[] readFile(String... path) throws IOException {
+        Entry file = findPath(path);
+        if (file == null || (file.attributes & ATTRIBUTE_DIRECTORY) != 0) return null;
+        return readChain(file.cluster, file.size);
+    }
+
+    /** Checks directory entries without allocating memory for the file contents. */
+    boolean exists(String... path) throws IOException {
+        return findPath(path) != null;
+    }
+
+    private Entry findPath(String... path) throws IOException {
         if (path.length == 0) throw new IllegalArgumentException("A file path is required");
         long directory = rootCluster;
         for (int index = 0; index < path.length - 1; index++) {
@@ -118,9 +129,7 @@ final class Fat32Volume implements AutoCloseable {
             if (entry == null || (entry.attributes & ATTRIBUTE_DIRECTORY) == 0) return null;
             directory = entry.cluster;
         }
-        Entry file = find(directory, path[path.length - 1]);
-        if (file == null || (file.attributes & ATTRIBUTE_DIRECTORY) != 0) return null;
-        return readChain(file.cluster, file.size);
+        return find(directory, path[path.length - 1]);
     }
 
     /** Reads a file that lives in the root directory, addressed as 8.3 name plus extension. */

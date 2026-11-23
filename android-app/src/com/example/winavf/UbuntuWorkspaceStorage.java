@@ -82,8 +82,8 @@ final class UbuntuWorkspaceStorage {
         try {
             if (vmRunning.getAsBoolean()) throw new IllegalStateException("The Ubuntu VM is running; it was not deleted.");
             File disk = disk();
-            String allowedDirectory = context.getFilesDir().getCanonicalPath() + File.separator;
-            if (!disk.getCanonicalPath().startsWith(allowedDirectory)) {
+            File root = context.getFilesDir();
+            if (!IoUtil.isInside(root, disk)) {
                 throw new SecurityException("Refusing to delete a file outside the named app-private workspace.");
             }
             try {
@@ -91,10 +91,17 @@ final class UbuntuWorkspaceStorage {
             } catch (ClassNotFoundException error) {
                 throw new IllegalStateException("AVF VM record could not be checked; workspace was preserved.", error);
             }
-            if (disk.exists() && !disk.delete()) throw new IOException("Could not delete the persistent Ubuntu disk.");
+            // The disk is only one of several artifacts. The staging payload holds the
+            // platform prefix, the ESP rollback backup and the boot wrapper, and the
+            // growth journal sits beside the disk; leaving them behind kept the space
+            // allocated until the whole application data was cleared.
+            File persistent = disk.getParentFile();
+            IoUtil.deleteTree(root, persistent);
+            IoUtil.deleteTree(root, new File(root, "linux-persistent-payload"));
             preferences.edit().putBoolean(UbuntuWorkspaceMedia.INSTALLED_READY, false)
                     .putBoolean(UbuntuWorkspaceMedia.HANDOFF_PENDING, false)
-                    .putBoolean("ubuntu_install_handoff_attempted", false).apply();
+                    .putBoolean("ubuntu_install_handoff_attempted", false)
+                    .remove(GROWTH_PENDING).apply();
         } finally {
             lifecycle.endStorageMutation();
         }

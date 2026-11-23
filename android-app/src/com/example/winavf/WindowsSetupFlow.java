@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.ProductDialog;
+import com.example.winavf.ui.UiLanguage;
+import com.example.winavf.runtime.VmLifecycle;
+import android.content.Intent;
+import android.content.ActivityNotFoundException;
+
 import android.app.Activity;
 import android.net.Uri;
 import android.util.Log;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
@@ -26,7 +32,7 @@ final class WindowsSetupFlow {
         }
 
         String status() {
-            if (setupAvailable) return progress.label(diskReady);
+            if (progress.phase() != null || setupAvailable) return progress.label(diskReady);
             return isoSelected ? "ISO проверен · Experimental" : "Экспериментальный запуск Windows";
         }
 
@@ -46,32 +52,33 @@ final class WindowsSetupFlow {
             return switch (phase) {
                 case CHECKING_ISO -> "Проверка Windows ISO…";
                 case CHECKING -> "Проверка установочных файлов…";
-                case COPYING -> "Копирование шаблона WinPE…";
+                case COPYING -> "Подготовка загрузки Windows…";
                 case FINALIZING -> "Проверка разметки диска…";
             };
         }
     }
 
-    // Disk preparation outlives an Activity recreation.
+    // The workspace screen reads process-wide progress after Activity recreation.
     private static volatile Progress progress = new Progress(null, "");
+    private static volatile WindowsSetupRuntime.Boot preparedBoot;
     private final Activity activity;
     private final WindowsWorkspaceMedia media;
     private final BooleanSupplier screenActive;
     private final BooleanSupplier vmRunning;
     private final Runnable refresh;
-    private final Consumer<WindowsWorkspaceMedia.Document> pickDocument;
+    private final Runnable pickIso;
     private final Consumer<WindowsSetupRuntime.Boot> boot;
     private boolean inspectingDisk;
 
     WindowsSetupFlow(Activity activity, BooleanSupplier screenActive, BooleanSupplier vmRunning,
-                     Runnable refresh, Consumer<WindowsWorkspaceMedia.Document> pickDocument,
+                     Runnable refresh, Runnable pickIso,
                      Consumer<WindowsSetupRuntime.Boot> boot) {
         this.activity = activity;
         this.media = new WindowsWorkspaceMedia(activity.getApplicationContext(), activity.getPreferences(0));
         this.screenActive = screenActive;
         this.vmRunning = vmRunning;
         this.refresh = refresh;
-        this.pickDocument = pickDocument;
+        this.pickIso = pickIso;
         this.boot = boot;
     }
 
@@ -83,15 +90,18 @@ final class WindowsSetupFlow {
     }
 
     boolean isoSelected() {
-        return media.selected(WindowsWorkspaceMedia.Document.ISO) != null;
+        return media.selectedIso() != null;
     }
 
     Workspace workspace() {
+        // Capture progress before reading the disk so a concurrent publish
+        // still causes a refresh even if this snapshot misses the new file.
+        Progress current = progress;
         boolean isoAvailable = WindowsInstallIso.available();
-        boolean setupAvailable = isoAvailable && WindowsSetupDisk.available();
         boolean diskExists = Files.exists(WindowsSetupDisk.workspace(activity), LinkOption.NOFOLLOW_LINKS);
+        boolean setupAvailable = diskExists ? WindowsSetupDisk.available() : WindowsSetupDisk.isoSetupAvailable(activity);
         return new Workspace(isoAvailable, setupAvailable, isoAvailable && isoSelected(), diskExists,
-                setupAvailable && diskReady(), progress);
+                setupAvailable && diskReady(), current);
     }
 
     void open() {
@@ -100,6 +110,7 @@ final class WindowsSetupFlow {
             notice(current.label(false));
             return;
         }
+        if (launchPreparedIfReady()) return;
         Path workspace = WindowsSetupDisk.workspace(activity);
         if (Files.exists(workspace, LinkOption.NOFOLLOW_LINKS)) {
             inspectDisk(workspace);
@@ -108,43 +119,84 @@ final class WindowsSetupFlow {
         }
     }
 
+    void confirmReset(boolean reinstall) {
+        if (vmRunning.getAsBoolean() || VmLifecycle.compatibilityProbeActive() || progress.phase() != null) {
+            notice("Сначала завершите текущий сеанс VM.");
+            return;
+        }
+        ProductDialog.show(activity, reinstall ? "Начать заново" : "Удалить воркспейс",
+                "Виртуальный диск Windows и все данные на нём будут удалены. Исходный ISO сохранится.",
+                reinstall ? "Начать заново и отформатировать" : "Удалить", true, () -> reset(reinstall));
+    }
+
+    private void reset(boolean reinstall) {
+        if (vmRunning.getAsBoolean() || VmLifecycle.compatibilityProbeActive() || progress.phase() != null) return;
+        progress = new Progress(WindowsSetupDisk.Phase.FINALIZING, "");
+        refresh.run();
+        new Thread(() -> {
+            String failure = "";
+            try {
+                Path disk = WindowsSetupDisk.workspace(activity);
+                if (Files.exists(disk, LinkOption.NOFOLLOW_LINKS)
+                        && !Files.isRegularFile(disk, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IOException("Unexpected Windows workspace path");
+                }
+                Files.deleteIfExists(disk);
+                // The runtime directory holds the extracted wrapper, the UART helper
+                // and the KD logs. It survived deletion and kept the space allocated.
+                File root = activity.getFilesDir();
+                IoUtil.deleteTree(root, new File(root, "windows-setup-runtime"));
+                IoUtil.deleteTree(root, new File(root, "payload"));
+                preparedBoot = null;
+                if (!reinstall) {
+                    media.forgetIso();
+                    activity.getPreferences(0).edit().remove("windows_workspace_title")
+                            .remove("last_display_windows").apply();
+                }
+            } catch (IOException error) {
+                failure = IoUtil.rootMessage(error);
+            }
+            String result = failure;
+            progress = new Progress(null, result);
+            activity.runOnUiThread(() -> {
+                if (!screenActive.getAsBoolean()) return;
+                refresh.run();
+                if (!result.isEmpty()) notice(result);
+                else if (reinstall) chooseMedia("");
+            });
+        }, "U-AVF-windows-reset").start();
+    }
+
     private void chooseMedia(String failure) {
-        Uri iso = media.selected(WindowsWorkspaceMedia.Document.ISO);
-        Uri winpe = media.selected(WindowsWorkspaceMedia.Document.WINPE);
-        String requirements = UiLanguage.format(
-                "Нужны Windows 11 ARM64 25H2 (ru-RU), сборка %s, и соответствующий шаблон WinPE.",
-                WindowsSetupDisk.INSTALL_BUILD)
-                + "\n" + WindowsSetupDisk.REFERENCE_TEMPLATE
+        Uri iso = media.selectedIso();
+        boolean canPrepare = iso != null && WindowsSetupDisk.isoSetupAvailable(activity);
+        String requirements = UiLanguage.text(
+                "Поддерживаются: 26H2 en-US ARM64 (сейчас на сайте Microsoft) и 25H2 ru-RU ARM64 (26200.6584).")
                 + "\n\n" + UiLanguage.format("Свободно %s · требуется %s",
                         IoUtil.formatBytes(activity.getFilesDir().getUsableSpace()),
                         IoUtil.formatBytes(WindowsSetupDisk.requiredFreeBytes()));
         if (!failure.isEmpty()) requirements += "\n\n" + failure;
-        String[] options = {iso == null ? "Выбрать ISO…" : "Заменить ISO…",
-                winpe == null ? "Выбрать шаблон WinPE…" : "Заменить шаблон WinPE…", "Подготовить диск"};
-        ProductDialog.choose(activity, "Установка Windows ARM64", requirements,
-                iso != null && winpe != null ? options : Arrays.copyOf(options, 2), -1, choice -> {
-                    switch (choice) {
-                        case 0 -> pickDocument.accept(WindowsWorkspaceMedia.Document.ISO);
-                        case 1 -> pickDocument.accept(WindowsWorkspaceMedia.Document.WINPE);
-                        case 2 -> prepare(iso, winpe);
-                        default -> {}
-                    }
-                });
+        String select = iso == null ? "Выбрать ISO…" : "Заменить ISO…";
+        if (!canPrepare) {
+            ProductDialog.choose(activity, "Установка Windows ARM64", requirements,
+                    new String[]{select, "Скачать ISO ↗"}, -1, choice -> {
+                        if (choice == 0) pickIso.run();
+                        else openOfficialDownload();
+                    });
+            return;
+        }
+        chooseSetupMode(requirements, true, () -> prepare(iso, WindowsSetupRuntime.Boot.INSTALL),
+                () -> prepare(iso, WindowsSetupRuntime.Boot.PREVIEW),
+                () -> prepare(iso, WindowsSetupRuntime.Boot.READ_ONLY_SETUP), pickIso);
     }
 
-    void selectWinpe(Uri source) {
-        new Thread(() -> {
-            try {
-                media.selectWinpe(source);
-                activity.runOnUiThread(() -> {
-                    if (screenActive.getAsBoolean()) open();
-                });
-            } catch (IOException | SecurityException error) {
-                activity.runOnUiThread(() -> {
-                    if (!activity.isDestroyed()) notice(IoUtil.rootMessage(error));
-                });
-            }
-        }, "U-AVF-windows-winpe").start();
+    private void openOfficialDownload() {
+        try {
+            activity.startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://www.microsoft.com/en-us/software-download/windows11arm64")));
+        } catch (ActivityNotFoundException error) {
+            notice("Не удалось открыть ссылку.");
+        }
     }
 
     void selectIso(Uri source) {
@@ -167,7 +219,7 @@ final class WindowsSetupFlow {
             activity.runOnUiThread(() -> {
                 if (!screenActive.getAsBoolean()) return;
                 refresh.run();
-                if (WindowsSetupDisk.available()) open();
+                if (WindowsSetupDisk.isoSetupAvailable(activity)) open();
                 else notice("Образ содержит загрузчик ARM64 и файлы установки. Загрузка Setup из ISO пока недоступна.");
             });
         } catch (IOException | RuntimeException | LinkageError error) {
@@ -182,19 +234,35 @@ final class WindowsSetupFlow {
         }
     }
 
-    private void prepare(Uri iso, Uri winpe) {
-        if (iso == null || winpe == null || progress.phase() != null || vmRunning.getAsBoolean()) return;
+    private void prepare(Uri iso, WindowsSetupRuntime.Boot selectedBoot) {
+        if (iso == null || progress.phase() != null || vmRunning.getAsBoolean()) return;
         progress = new Progress(WindowsSetupDisk.Phase.CHECKING, "");
         refresh.run();
+        startDiskPreparation(media, iso, selectedBoot);
+    }
+
+    private static void startDiskPreparation(WindowsWorkspaceMedia media, Uri iso, WindowsSetupRuntime.Boot selectedBoot) {
+        // Only application-scoped storage survives on this worker. The visible
+        // workspace observes progress and refreshes when the operation completes.
         new Thread(() -> {
             try {
-                media.prepare(iso, winpe, phase -> progress = new Progress(phase, ""));
+                media.prepare(iso, phase -> progress = new Progress(phase, ""));
+                preparedBoot = selectedBoot;
                 progress = new Progress(null, "");
             } catch (IOException | RuntimeException | LinkageError error) {
                 Log.w("UAVF-Windows-Setup", "Preparation failed", error);
                 progress = new Progress(null, IoUtil.rootMessage(error));
             }
         }, "U-AVF-windows-prepare").start();
+    }
+
+    boolean launchPreparedIfReady() {
+        if (!screenActive.getAsBoolean() || vmRunning.getAsBoolean() || progress.phase() != null) return false;
+        WindowsSetupRuntime.Boot selectedBoot = preparedBoot;
+        if (selectedBoot == null) return false;
+        preparedBoot = null;
+        boot.accept(selectedBoot);
+        return true;
     }
 
     private void inspectDisk(Path disk) {
@@ -226,10 +294,12 @@ final class WindowsSetupFlow {
                     "Запустить", false, () -> boot.accept(WindowsSetupRuntime.Boot.INSTALLED));
             case PREVIEW_AND_INSTALL -> offerSetup(true);
             case PREVIEW -> offerSetup(false);
-            case PENDING_INSTALL -> ProductDialog.notice(activity, "Диск Windows сохранён",
-                    "Найден раздел NTFS. Завершение установки не подтверждено. Повторный запуск пока недоступен.");
-            case PARTITIONED -> ProductDialog.notice(activity, "Диск Windows сохранён",
-                    "Диск уже размечен. Повторный запуск пока недоступен.");
+            case PENDING_INSTALL -> ProductDialog.show(activity, "Диск Windows сохранён",
+                    "Найден раздел NTFS. Завершение установки не подтверждено. Если установка прервалась, её можно начать заново.",
+                    "Начать заново", false, () -> confirmReset(true));
+            case PARTITIONED -> ProductDialog.show(activity, "Диск Windows сохранён",
+                    "Диск уже размечен. Если установка прервалась, её можно начать заново.",
+                    "Начать заново", false, () -> confirmReset(true));
             case UNAVAILABLE -> ProductDialog.notice(activity, "Диск Windows подготовлен",
                     "Диск сохранён в U-AVF. Запуск Windows Setup с этого диска пока недоступен.");
         }
@@ -238,27 +308,40 @@ final class WindowsSetupFlow {
     private void offerSetup(boolean guided) {
         long required = WindowsSetupDisk.requiredInstallFreeBytes();
         long available = activity.getFilesDir().getUsableSpace();
-        if (guided && available >= required) {
-            ProductDialog.choose(activity, "Windows Setup",
-                    "Установка Windows 11 Pro начнётся автоматически после подтверждения.",
-                    new String[]{"Открыть WinPE", "Установить Windows"}, -1, choice -> {
-                        if (choice == 0) boot.accept(WindowsSetupRuntime.Boot.PREVIEW);
-                        else confirmInstall();
-                    });
-            return;
-        }
-        String description = guided
-                ? UiLanguage.format("Для автоматической установки нужно %1$s свободного места. Сейчас доступно %2$s.",
-                        IoUtil.formatBytes(required), IoUtil.formatBytes(available))
-                : UiLanguage.text("Можно открыть WinPE и проверить экран и ввод. Автоматическая установка пока недоступна в этой сборке.");
-        ProductDialog.show(activity, "Windows Setup", description, "Открыть WinPE", false,
-                () -> boot.accept(WindowsSetupRuntime.Boot.PREVIEW));
+        boolean canInstall = guided && available >= required;
+        String description = canInstall ? "" : guided
+                ? UiLanguage.format("Для автоматической установки освободите ещё %d МиБ.",
+                        (required - available + (1L << 20) - 1) >> 20)
+                : UiLanguage.text("Автоматическая установка недоступна для этого диска.");
+        chooseSetupMode(description, canInstall, () -> boot.accept(WindowsSetupRuntime.Boot.INSTALL),
+                () -> boot.accept(WindowsSetupRuntime.Boot.PREVIEW),
+                () -> boot.accept(WindowsSetupRuntime.Boot.READ_ONLY_SETUP), null);
     }
 
-    private void confirmInstall() {
-        ProductDialog.show(activity, "Установить Windows",
-                "U-AVF создаст разделы на подготовленном виртуальном диске и начнёт установку Windows 11 Pro.",
-                "Установить", false, () -> boot.accept(WindowsSetupRuntime.Boot.INSTALL));
+    private void chooseSetupMode(String description, boolean canInstall, Runnable automatic,
+                                 Runnable manual, Runnable readOnly, Runnable replace) {
+        var labels = new java.util.ArrayList<String>();
+        var actions = new java.util.ArrayList<Runnable>();
+        if (canInstall) {
+            labels.add("Автоматическая установка");
+            actions.add(() -> ProductDialog.show(activity, "Установить Windows",
+                    "U-AVF создаст разделы на подготовленном виртуальном диске и начнёт установку Windows 11 Pro.",
+                    "Установить", false, automatic));
+        }
+        labels.add("Свой сценарий установки");
+        actions.add(() -> ProductDialog.show(activity, "Свой сценарий установки",
+                "Выберите параметры установки в Windows Setup. Виртуальный диск доступен для записи.",
+                "Открыть установщик", false, manual));
+        labels.add("Открыть установщик без изменения ISO");
+        actions.add(readOnly);
+        if (replace != null) {
+            labels.add("Заменить ISO…");
+            actions.add(replace);
+        }
+        String note = UiLanguage.text("Исходный ISO сохраняется. В режиме просмотра виртуальный диск доступен только для чтения.");
+        String message = description.isEmpty() ? note : description + "\n\n" + note;
+        ProductDialog.choosePrimary(activity, "Установка Windows ARM64", message,
+                labels.toArray(String[]::new), canInstall ? 0 : -1, false, index -> actions.get(index).run());
     }
 
     private void notice(String message) {

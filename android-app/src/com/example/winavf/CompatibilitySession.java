@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.diagnostics.CompatibilityChecks;
+import com.example.winavf.diagnostics.CompatibilityStatus;
+import com.example.winavf.ui.CompatibilityScreen;
+import com.example.winavf.ui.ProductDialog;
+import com.example.winavf.ui.UiLanguage;
+
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.content.SharedPreferences;
@@ -26,15 +32,17 @@ final class CompatibilitySession {
     private final BooleanSupplier hasPermissions;
     private final Supplier<String> appVersion;
     private final Runnable update;
+    private final Runnable permissionFailure;
 
-    private final String[] checks = new String[FigmaCompatibilityView.CHECKS.length];
-    private AvfCompatibilityProbe.Status status = AvfCompatibilityProbe.Status.INSUFFICIENT_DATA;
+    private final String[] checks = new String[CompatibilityChecks.LABELS.size()];
+    private CompatibilityStatus status = CompatibilityStatus.INSUFFICIENT_DATA;
     private boolean running;
     private int completed;
     private static final String[] REPORT_CHECKS = {"arm64", "avf", "permissions", "platform", "created", "boot", "memory", "storage", "vsock"};
 
     CompatibilitySession(Activity activity, Handler ui, VmLifecycle lifecycle, RuntimeDiagnostics diagnostics,
-                         BooleanSupplier vmRunning, BooleanSupplier hasPermissions, Supplier<String> appVersion, Runnable update) {
+                         BooleanSupplier vmRunning, BooleanSupplier hasPermissions, Supplier<String> appVersion,
+                         Runnable update, Runnable permissionFailure) {
         this.activity = activity;
         this.ui = ui;
         this.preferences = activity.getPreferences(0);
@@ -44,31 +52,36 @@ final class CompatibilitySession {
         this.hasPermissions = hasPermissions;
         this.appVersion = appVersion;
         this.update = update;
+        this.permissionFailure = permissionFailure;
         Arrays.fill(checks, "Not checked");
     }
 
     boolean running() { return running; }
-    AvfCompatibilityProbe.Status status() { return status; }
+    CompatibilityStatus status() { return status; }
     String check(int index) { return checks[index]; }
     boolean sharingDecided() { return preferences.contains(SHARING); }
     boolean sharing() { return preferences.getBoolean(SHARING, false); }
     void setSharing(boolean share) { preferences.edit().putBoolean(SHARING, share).apply(); }
 
-    void bind(FigmaCompatibilityView view) { view.results(running, completed, checks); }
+    void bind(CompatibilityScreen view) { view.results(running, completed, checks); }
 
     void confirmFirstRun() {
-        ProductDialog.choose(activity, "Статистика совместимости",
+        ProductDialog.choosePrimary(activity, "Статистика совместимости",
                 "Разрешите отправить результат этого теста в Firebase. Это поможет нам расширить список поддерживаемых устройств. Передаются модель, конфигурация и результаты проверки AVF.",
-                new String[]{"Продолжить без отправки", "Разрешить и начать"}, -1, index -> {
-                    setSharing(index == 1);
+                new String[]{"Разрешить и начать", "Продолжить без отправки"}, 0, true, index -> {
+                    setSharing(index == 0);
                     start();
                 });
     }
 
     void start() {
+        if (running) return;
         if (vmRunning.getAsBoolean() || !lifecycle.beginCompatibilityProbe()) {
             ProductDialog.notice(activity, "Проверка устройства", "Сначала завершите текущий сеанс VM.");
             return;
+        }
+        if (!hasPermissions.getAsBoolean()) {
+            preferences.edit().putBoolean(CompatibilityAudit.WAITING_FOR_PERMISSIONS, true).apply();
         }
         prepareProgress();
         boolean shareRun = sharing();
@@ -85,17 +98,26 @@ final class CompatibilitySession {
         }
     }
 
+    boolean waitingForPermissions() {
+        return preferences.getBoolean(CompatibilityAudit.WAITING_FOR_PERMISSIONS,
+                CompatibilityAudit.PERMISSION_REQUIRED.equals(checks[CompatibilityChecks.AVF_PERMISSIONS]));
+    }
+
+    void clearPermissionRetry() {
+        preferences.edit().putBoolean(CompatibilityAudit.WAITING_FOR_PERMISSIONS, false).apply();
+    }
+
     private void prepareProgress() {
         running = true;
         completed = 0;
-        status = AvfCompatibilityProbe.Status.INSUFFICIENT_DATA;
+        status = CompatibilityStatus.INSUFFICIENT_DATA;
         Arrays.fill(checks, "Waiting");
     }
 
     private void runProbe(boolean shareRun) {
         try {
             var result = new CompatibilityAudit(activity, preferences, hasPermissions).run(this::progress);
-            if (shareRun && sharing()) {
+            if (result.permissionGranted() && shareRun && sharing()) {
                 new Thread(() -> upload(result), "U-AVF-compatibility-upload").start();
             }
         } finally {
@@ -125,15 +147,16 @@ final class CompatibilitySession {
         readResult();
         diagnostics.append("Check", "Event", "Compatibility result: " + status);
         update.run();
+        if (waitingForPermissions()) permissionFailure.run();
     }
 
     private void readResult() {
         boolean current = preferences.getInt("compatibility_check_schema", 0) == CompatibilityAudit.SCHEMA
                 && Build.FINGERPRINT.equals(preferences.getString("compatibility_checked_build", ""));
-        status = AvfCompatibilityProbe.Status.INSUFFICIENT_DATA;
+        status = CompatibilityStatus.INSUFFICIENT_DATA;
         if (current) {
             try {
-                status = AvfCompatibilityProbe.Status.valueOf(
+                status = CompatibilityStatus.valueOf(
                         preferences.getString("compatibility_avf_status", "INSUFFICIENT_DATA"));
             } catch (IllegalArgumentException ignored) {}
         }

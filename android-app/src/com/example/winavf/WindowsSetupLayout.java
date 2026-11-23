@@ -5,8 +5,10 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -34,8 +36,58 @@ final class WindowsSetupLayout {
 
     enum State { FRESH, PARTITIONED, NTFS_TARGET }
     record Inspection(State state, byte[] diskGuid, byte[] targetGuid) {}
+    record Geometry(byte[] prefix, byte[] entries, byte[] tail) {}
 
     private WindowsSetupLayout() {}
+
+    /** Create the same GPT layout as the verified setup template, with a blank source and target. */
+    static void createFresh(Path staging) throws IOException {
+        Geometry geometry = freshGeometry();
+        if (verify(geometry.prefix(), geometry.entries(), geometry.tail()) != 0)
+            throw new IOException("Generated Windows Setup GPT is not fresh");
+        try (FileChannel disk = FileChannel.open(staging, StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE, StandardOpenOption.SPARSE)) {
+            write(disk, geometry.prefix());
+            write(disk, geometry.entries());
+            disk.position(TARGET_BYTES - geometry.tail().length);
+            write(disk, geometry.tail());
+            disk.force(true);
+        }
+    }
+
+    static Geometry freshGeometry() {
+        byte[] entries = new byte[TABLE_BYTES];
+        System.arraycopy(SOURCE_ENTRY, 0, entries, 0, SOURCE_ENTRY.length);
+        int tableCrc = crc(entries, entries.length);
+        byte[] prefix = new byte[2 * SECTOR];
+        prefix[448] = 2;
+        prefix[450] = (byte) 0xee;
+        Arrays.fill(prefix, 451, 454, (byte) 0xff);
+        littleEndian(prefix).putInt(454, 1).putInt(458, (int) LAST_LBA);
+        prefix[510] = 0x55;
+        prefix[511] = (byte) 0xaa;
+        System.arraycopy(header(1, LAST_LBA, 2, tableCrc), 0, prefix, SECTOR, SECTOR);
+        byte[] tail = Arrays.copyOf(entries, TABLE_BYTES + SECTOR);
+        System.arraycopy(header(LAST_LBA, 1, LAST_LBA - 32, tableCrc), 0, tail, TABLE_BYTES, SECTOR);
+        return new Geometry(prefix, entries, tail);
+    }
+
+    private static byte[] header(long current, long alternate, long entries, int tableCrc) {
+        byte[] sector = new byte[SECTOR];
+        var fields = littleEndian(sector);
+        fields.put(GPT_SIGNATURE).putInt(0x00010000).putInt(92).position(24);
+        fields.putLong(current).putLong(alternate).putLong(34).putLong(LAST_USABLE);
+        fields.put(DISK_GUID).putLong(entries).putInt(128).putInt(128).putInt(tableCrc);
+        fields.putInt(16, crc(sector, 92));
+        return sector;
+    }
+
+    private static void write(FileChannel disk, byte[] bytes) throws IOException {
+        var buffer = ByteBuffer.wrap(bytes);
+        while (buffer.hasRemaining()) {
+            if (disk.write(buffer) <= 0) throw new IOException("Could not write Windows Setup GPT");
+        }
+    }
 
     static State read(Path disk) throws IOException {
         return inspect(disk).state();

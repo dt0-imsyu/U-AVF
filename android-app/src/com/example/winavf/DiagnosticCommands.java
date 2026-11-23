@@ -26,6 +26,8 @@ final class DiagnosticCommands {
       void attachDisplay(Object vm);
       void feedFrame(byte[] frame);
       void show(String message);
+      /** Shows the failure card for one platform without starting a VM. QA only. */
+      void previewBootFailure(String os, boolean windows);
    }
 
    private final Activity activity;
@@ -152,6 +154,12 @@ final class DiagnosticCommands {
       debugWorker(intent, "export_product_bcd", "WinAVF-product-bcd-audit", diskReports::exportBcd);
       debugWorker(intent, "persistent_witness_audit", "WinAVF-persistent-witness-audit", diskReports::auditWitness);
       debugWorker(intent, "persistent_witness_cleanup", "WinAVF-persistent-witness-cleanup", diskReports::cleanupWitness);
+      if (debugAction(intent, "preview_boot_failure")) {
+         // Renders the failure card on the UI thread without touching any VM or disk.
+         String os = intent.getStringExtra("preview_os");
+         activity.runOnUiThread(() -> host.previewBootFailure(os == null ? "Ubuntu" : os,
+               intent.getBooleanExtra("preview_windows", false)));
+      }
    }
 
    private void openEncodedDisplayProof(Intent intent) {

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.UiLanguage;
+
 import android.content.SharedPreferences;
 import com.example.winavf.diagnostics.CompatibilityHistory;
 import com.example.winavf.diagnostics.DiagnosticJournal;

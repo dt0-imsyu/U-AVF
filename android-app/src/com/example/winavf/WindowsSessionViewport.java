@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.input.GuestInput;
+
 import android.app.Activity;
 import android.os.Handler;
 import android.os.SystemClock;
@@ -80,6 +82,7 @@ final class WindowsSessionViewport implements WindowsSetupSession.View {
     }
 
     private void describe(WindowsSetupRuntime setup, boolean active) {
+        transition.setWindowsPostInstall(setup.postInstallStart());
         if (setup.installing()) event("Windows installation", active ? "Guided install active" : "Guided install requested");
         else if (setup.setupEnvironment()) event("Windows setup", active ? "WinPE active" : "WinPE requested");
     }
@@ -89,6 +92,10 @@ final class WindowsSessionViewport implements WindowsSetupSession.View {
             transition.failure(setup.error(), SystemClock.elapsedRealtime());
             host.refreshTransition();
         } else {
+            if (transition.operation() == RuntimeTransition.Mode.SHUTDOWN) {
+                event("VM stopped", "Windows AVF owner finished");
+                host.refreshTransition();
+            }
             transition.dismiss();
             host.showWorkspace();
         }

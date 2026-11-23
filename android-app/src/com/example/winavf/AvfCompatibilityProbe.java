@@ -1,5 +1,7 @@
 package com.example.winavf;
 
+import com.example.winavf.diagnostics.CompatibilityStatus;
+
 import android.content.Context;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
@@ -35,9 +37,7 @@ final class AvfCompatibilityProbe {
     private static final int NONCE_BYTES = 32;
     private static final long PORT = 4069;
 
-    enum Status { COMPATIBLE, NEEDS_WORK, INCOMPATIBLE, INSUFFICIENT_DATA }
-
-    record Result(Status status, boolean created, boolean booted, boolean memory,
+    record Result(CompatibilityStatus status, boolean created, boolean booted, boolean memory,
                   boolean storage, boolean vsock, long guestMemoryBytes, String details) {
         String report() {
             return "AVF_STATUS=" + status + "\nVM_CREATED=" + created + "\nKERNEL_BOOTED=" + booted
@@ -65,17 +65,17 @@ final class AvfCompatibilityProbe {
         boolean created = false, booted = false, memory = false, storage = false, vsock = false;
         long bytes = 0;
         String details = "All required AVF checks passed.";
-        Status status = Status.INSUFFICIENT_DATA;
+        CompatibilityStatus status = CompatibilityStatus.INSUFFICIENT_DATA;
         try {
             Class<?> managerType = Class.forName("android.system.virtualmachine.VirtualMachineManager");
             manager = context.getSystemService(managerType);
             if (manager == null)
-                return new Result(Status.INSUFFICIENT_DATA, false, false, false, false, false, 0,
+                return new Result(CompatibilityStatus.INSUFFICIENT_DATA, false, false, false, false, false, 0,
                         "Android did not provide a virtualization manager.");
             int capabilities = (int)invoke(manager, "getCapabilities");
             int nonProtected = managerType.getField("CAPABILITY_NON_PROTECTED_VM").getInt(null);
             if ((capabilities & nonProtected) == 0)
-                return new Result(Status.INCOMPATIBLE, false, false, false, false, false, 0,
+                return new Result(CompatibilityStatus.INCOMPATIBLE, false, false, false, false, false, 0,
                         "AVF reports no non-protected VM capability.");
 
             Object prior = invoke(manager, "get", String.class, VM_NAME);
@@ -145,15 +145,15 @@ final class AvfCompatibilityProbe {
             if (running(vm))
                 throw new IOException("The probe VM did not stop before disk readback.");
             storage = (flags & 2) != 0 && verifyWitness(boot, nonce);
-            status = memory && storage ? Status.COMPATIBLE : Status.NEEDS_WORK;
-            if (status == Status.NEEDS_WORK)
+            status = memory && storage ? CompatibilityStatus.COMPATIBLE : CompatibilityStatus.NEEDS_WORK;
+            if (status == CompatibilityStatus.NEEDS_WORK)
                 details = !memory ? "Guest memory write/read did not pass." : "Virtio block write/read did not pass.";
         } catch (Exception error) {
             if (error instanceof InterruptedException)
                 Thread.currentThread().interrupt();
             booted |= observed("UAVF_COMPAT_KERNEL_BOOTED");
             status = booted && !observed("UAVF_COMPAT_MODULE_ERROR")
-                    ? Status.NEEDS_WORK : Status.INSUFFICIENT_DATA;
+                    ? CompatibilityStatus.NEEDS_WORK : CompatibilityStatus.INSUFFICIENT_DATA;
             details = description(error);
         } finally {
             try {
@@ -170,7 +170,7 @@ final class AvfCompatibilityProbe {
                     Files.delete(directory.toPath());
                 }
             } catch (Exception error) {
-                status = booted ? Status.NEEDS_WORK : Status.INSUFFICIENT_DATA;
+                status = booted ? CompatibilityStatus.NEEDS_WORK : CompatibilityStatus.INSUFFICIENT_DATA;
                 details += " Probe cleanup: " + description(error);
             } finally {
                 if (serial != null) {

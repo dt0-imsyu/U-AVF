@@ -3,6 +3,8 @@
 // No third-party or previously granted rights are withdrawn.
 package com.example.winavf;
 
+import com.example.winavf.ui.ProductDialog;
+
 import static com.example.winavf.IoUtil.rootMessage;
 
 import android.app.Activity;

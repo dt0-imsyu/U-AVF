@@ -65,7 +65,11 @@ final class UbuntuWorkspaceBoot {
         if (allowEspRecovery && !candidate) {
             String recovery = PersistentUbuntuDisk.recoverInstalledEsp(disk, UbuntuIsoImport.BYTES,
                     new File(context.getFilesDir(), "linux-persistent-payload/esp-backups"),
-                    Installer.DEFAULT.espSha, Installer.MAVK.espSha, Installer.PLASMA.espSha);
+                    Installer.DEFAULT.espSha, Installer.MAVK.espSha, Installer.PLASMA.espSha,
+                    // Older installer ESPs may still need to restore their installed boot backup.
+                    "AE9B2C7DE939D204E749274035BECE03B469C974ECD243272AB18B46E5925824",
+                    "5D927DB2E4BCFED509E59F40274AAF077747B3D856891D08898B334E33B94E1C",
+                    "8F89D3B492A6157A077BDBCC5A50D18B0572B34F310F5BB489729E83BE1D10A6");
             Log.i("U-AVF", "INSTALLED_ESP_RECOVERY=" + recovery);
             candidate = PersistentUbuntuDisk.hasInstalledBootCandidate(disk);
         }

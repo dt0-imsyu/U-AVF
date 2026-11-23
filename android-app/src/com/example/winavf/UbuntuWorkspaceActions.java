@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.ProductDialog;
+
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
@@ -48,7 +50,8 @@ final class UbuntuWorkspaceActions {
     }
 
     void chooseIso() {
-        ProductDialog.menu(activity, "Установочный ISO", new String[]{"Выбрать файл…", "Сайт Ubuntu ↗"}, index -> {
+        ProductDialog.choose(activity, "Установочный ISO", "Ubuntu 24.04.5 Desktop ARM64",
+                new String[]{"Выбрать файл…", "Скачать ISO ↗"}, -1, index -> {
             if (index == 1) openOfficialDownload();
             else if (blockedByVm.getAsBoolean()) show.accept("Завершите Ubuntu перед сменой образа.");
             else pickIso.run();
@@ -58,7 +61,7 @@ final class UbuntuWorkspaceActions {
     void openOfficialDownload() {
         try {
             activity.startActivity(new Intent(Intent.ACTION_VIEW,
-                    Uri.parse("https://cdimage.ubuntu.com/ubuntu/releases/24.04.5/release/")));
+                    Uri.parse("https://cdimage.ubuntu.com/ubuntu/releases/24.04/release/")));
         } catch (ActivityNotFoundException error) {
             show.accept("No browser available. Open cdimage.ubuntu.com to download Ubuntu Desktop ARM64.");
         }

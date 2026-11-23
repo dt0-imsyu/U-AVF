@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.ProductDialog;
+import com.example.winavf.ui.WorkspaceSettingsScreen;
+
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.content.SharedPreferences;
@@ -19,7 +22,7 @@ final class UbuntuSettingsTabs {
         void toggleKeyboardCapture();
         void clipboardPreferenceChanged();
         void showDisplayTab();
-        void refresh(FigmaWorkspaceSettings view);
+        void refresh(WorkspaceSettingsScreen view);
         void installPlasma();
         void expandStorage();
         void showStorageRecovery();
@@ -48,7 +51,7 @@ final class UbuntuSettingsTabs {
         return Arrays.copyOf(LABELS, mavkAvailable ? LABELS.length : 2);
     }
 
-    void bind(FigmaWorkspaceSettings view, int tab, File disk, String plasmaState) {
+    void bind(WorkspaceSettingsScreen view, int tab, File disk, String plasmaState) {
         switch (tab) {
             case 0 -> performance(view);
             case 1 -> display(view, plasmaState);
@@ -59,7 +62,7 @@ final class UbuntuSettingsTabs {
         }
     }
 
-    private void performance(FigmaWorkspaceSettings view) {
+    private void performance(WorkspaceSettingsScreen view) {
         int selected = Arrays.binarySearch(MEMORY_GIB, preferences.getInt("linux_ram_gib", 4));
         view.card(476, 612);
         view.segments(520, "Память", new String[]{"2 ГБ", "3 ГБ", "4 ГБ", "6 ГБ"},
@@ -91,7 +94,7 @@ final class UbuntuSettingsTabs {
         return true;
     }
 
-    private void display(FigmaWorkspaceSettings view, String plasmaState) {
+    private void display(WorkspaceSettingsScreen view, String plasmaState) {
         Mode mode = selectedMode();
         boolean running = host.running();
         view.card(476, !running ? 450 : plasmaState != null ? 506 : 332);
@@ -109,7 +112,7 @@ final class UbuntuSettingsTabs {
 
     private Mode selectedMode() { return display.selected(() -> MavkRuntimeAssets.isBundled(activity)); }
 
-    private boolean selectDisplay(FigmaWorkspaceSettings view, Mode requested) {
+    private boolean selectDisplay(WorkspaceSettingsScreen view, Mode requested) {
         if (requested == selectedMode()) return false;
         if (host.running()) {
             ProductDialog.notice(activity, "Графический вывод", "Завершите Ubuntu перед сменой режима вывода.");
@@ -120,7 +123,7 @@ final class UbuntuSettingsTabs {
         return true;
     }
 
-    private void resolution(FigmaWorkspaceSettings view, Mode mode) {
+    private void resolution(WorkspaceSettingsScreen view, Mode mode) {
         int selected = Arrays.asList(RESOLUTIONS).indexOf(display.resolution(mode));
         view.choice(780, "aea17", "Разрешение", new String[]{"1280 × 800", "1920 × 1080", "1920 × 1200"},
                 selected, index -> {
@@ -130,7 +133,7 @@ final class UbuntuSettingsTabs {
                 });
     }
 
-    private void plasma(FigmaWorkspaceSettings view, String state) {
+    private void plasma(WorkspaceSettingsScreen view, String state) {
         String label = switch (state) {
             case "installing" -> "Установка идёт…";
             case "ready" -> "Установлена";
@@ -141,7 +144,7 @@ final class UbuntuSettingsTabs {
                 "ready".equals(state) || "installing".equals(state) ? null : host::installPlasma);
     }
 
-    private void input(FigmaWorkspaceSettings view) {
+    private void input(WorkspaceSettingsScreen view) {
         view.card(476, 704);
         toggle(view, 476, "1bf09", "Общий буфер обмена", "linux_text_clipboard_enabled", false, "");
         toggle(view, 604, "12205", "Жест от правого края", "runtime_edge_gesture", false, "");
@@ -157,7 +160,7 @@ final class UbuntuSettingsTabs {
         view.note(1112, "Передаёт системные сочетания в VM. Для этого нужна служба U-AVF.");
     }
 
-    private void services(FigmaWorkspaceSettings view) {
+    private void services(WorkspaceSettingsScreen view) {
         String onRestart = host.running() ? "Изменение вступит в силу после перезапуска Ubuntu."
                 : "Настройка применяется при запуске Ubuntu.";
         view.card(476, 256);
@@ -165,13 +168,13 @@ final class UbuntuSettingsTabs {
         toggle(view, 604, "ff92e", "Интернет", "linux_internet_enabled", true, onRestart);
     }
 
-    private void storage(FigmaWorkspaceSettings view, File disk) {
+    private void storage(WorkspaceSettingsScreen view, File disk) {
         boolean exists = disk.isFile();
         view.storage(exists ? IoUtil.formatBytes(disk.length()) + " · диск U-AVF" : "Диск ещё не создан",
                 exists ? host::expandStorage : null, host::showStorageRecovery);
     }
 
-    private void toggle(FigmaWorkspaceSettings view, int y, String icon, String title, String key,
+    private void toggle(WorkspaceSettingsScreen view, int y, String icon, String title, String key,
                         boolean defaultValue, String note) {
         view.toggle(y, icon, title, () -> preferences.getBoolean(key, defaultValue), () -> {
             boolean previous = preferences.getBoolean(key, defaultValue);

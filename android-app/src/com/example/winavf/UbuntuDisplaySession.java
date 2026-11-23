@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.input.GuestInput;
+
+import com.example.winavf.ui.UiLanguage;
+
 import android.app.Activity;
-import android.app.Dialog;
 import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.os.Handler;
@@ -28,9 +31,10 @@ final class UbuntuDisplaySession {
         void show(String message);
     }
 
-    private static final String DEFAULT_RESOLUTION = "1920x1200";
-    private static final long RETRY_WINDOW_MS = 60_000;
-    private static final int RETRIES_PER_WINDOW = 3;
+    private static final int ENCODED_RETRIES = 2;
+    private static final long ENCODED_READY_MS = 25_000;
+    private static final long ENCODED_HANDOFF_MS = 10_000;
+    private static final long RAW_READY_MS = 35_000;
     private final Activity activity;
     private final Handler ui;
     private final SharedPreferences preferences;
@@ -43,9 +47,11 @@ final class UbuntuDisplaySession {
     private final Host host;
     private volatile Object guest;
     private boolean mavkGuestReady;
-    private long retryWindowStart;
     private int retries;
-    private Dialog fallbackDialog;
+    private boolean rawFallback;
+    private boolean encodedPresented;
+    private long encodedHandoffDeadline;
+    private long initialFallbackAt;
 
     UbuntuDisplaySession(Activity activity, Handler ui, VmLifecycle lifecycle, RuntimeTransition transition,
                          GuestDisplaySurfaces surfaces, FrameSurfaceView frameView,
@@ -71,17 +77,20 @@ final class UbuntuDisplaySession {
     private void start(Object vm, boolean forceRaw) {
         activity.runOnUiThread(() -> {
             if (activity.isDestroyed() || activity.isFinishing() || !lifecycle.owns(vm)) return;
-            dismissFallback();
             int epoch = connection.begin();
             surfaces.close();
             if (guest != vm) {
                 guest = vm;
                 retries = 0;
-                retryWindowStart = 0;
+                rawFallback = false;
+                encodedPresented = false;
+                encodedHandoffDeadline = 0;
+                initialFallbackAt = 0;
                 mavkGuestReady = false;
             }
             host.connectServices(vm);
-            openTransport(vm, epoch, forceRaw);
+            rawFallback |= forceRaw;
+            openTransport(vm, epoch, rawFallback);
         });
     }
 
@@ -106,12 +115,6 @@ final class UbuntuDisplaySession {
         mavkGuestReady = ready;
         MavkDisplayRuntime renderer = surfaces.renderer();
         if (renderer != null) renderer.setGuestSessionReady(ready);
-    }
-
-    void dismissFallback() {
-        if (fallbackDialog == null) return;
-        fallbackDialog.dismiss();
-        fallbackDialog = null;
     }
 
     private void openMavk(Object vm, int epoch) {
@@ -139,10 +142,16 @@ final class UbuntuDisplaySession {
     }
 
     private void openEncoded(Object vm, int epoch, String requested) {
+        if (initialFallbackAt == 0) initialFallbackAt = SystemClock.elapsedRealtime() + ENCODED_HANDOFF_MS;
         SurfaceView surface = surfaces.openEncoded();
         surface.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> fitEncoded(surface, r - l, b - t));
         var decoder = new EncodedDisplayProbe(activity, vm, 60, () -> ui.postDelayed(
-                () -> encodedEnded(vm, epoch, surface, requested), 1200));
+                () -> encodedEnded(vm, epoch, surface, false), 1200));
+        long readyDelay = encodedHandoffDeadline == 0 ? ENCODED_READY_MS
+                : Math.max(0, encodedHandoffDeadline - SystemClock.elapsedRealtime());
+        ui.postDelayed(() -> {
+            if (!decoder.hasDesktopFrame()) encodedEnded(vm, epoch, surface, true);
+        }, readyDelay);
         decoder.onStreamGeometry(() -> {
             if (surfaces.ownsEncoded(surface)) surfaces.fitEncoded();
         });
@@ -173,6 +182,9 @@ final class UbuntuDisplaySession {
 
     private void presentEncoded(EncodedDisplayProbe decoder, SurfaceView surface, int epoch, String requested) {
         if (!surfaces.ownsEncoded(surface) || !connection.current(epoch) || !transition.acceptsDesktop()) return;
+        encodedPresented = true;
+        encodedHandoffDeadline = 0;
+        retries = 0;
         boolean firstFrame = !host.frameVisible();
         int width = decoder.streamWidth();
         int height = decoder.streamHeight();
@@ -185,40 +197,34 @@ final class UbuntuDisplaySession {
         }
     }
 
-    private void encodedEnded(Object vm, int epoch, SurfaceView surface, String requested) {
+    private void encodedEnded(Object vm, int epoch, SurfaceView surface, boolean timedOut) {
         if (!mayReconnect(vm, epoch) || !surfaces.ownsEncoded(surface)) return;
         long now = SystemClock.elapsedRealtime();
-        if (now - retryWindowStart > RETRY_WINDOW_MS) {
-            retryWindowStart = now;
-            retries = 0;
+        if (encodedPresented && encodedHandoffDeadline == 0) {
+            encodedHandoffDeadline = now + ENCODED_HANDOFF_MS;
         }
         var decoder = surfaces.decoder();
-        boolean retry = decoder != null && decoder.retryableSessionEnd() && retries < RETRIES_PER_WINDOW;
+        boolean handoff = encodedHandoffDeadline != 0;
+        boolean retry = handoff ? now < encodedHandoffDeadline
+                : now < initialFallbackAt || (decoder != null
+                        && (timedOut || decoder.retryableSessionEnd()) && retries < ENCODED_RETRIES);
         input.releaseKeys();
         connection.publishInput(epoch, null);
         surfaces.close();
         if (retry) {
-            retries++;
-            Log.i("UAVF-H264", "Reconnecting after guest X11 session handoff");
+            if (handoff) Log.i("UAVF-H264", "Reconnecting Ubuntu encoded display during login handoff");
+            else {
+                retries++;
+                Log.i("UAVF-H264", "Retrying Ubuntu encoded display " + retries + "/" + ENCODED_RETRIES);
+            }
             ui.postDelayed(() -> {
                 if (mayReconnect(vm, epoch)) start(vm);
-            }, 1000);
+            }, handoff ? Math.min(1000, encodedHandoffDeadline - now) : 1000);
         } else {
-            offerRawFallback(vm, epoch, requested);
-        }
-    }
-
-    private void offerRawFallback(Object vm, int epoch, String requested) {
-        if (DEFAULT_RESOLUTION.equals(requested)) {
-            host.show("Encoded display unavailable. Restoring stable display.");
+            Log.w("UAVF-H264", "Encoded display unavailable; switching to raw for this Ubuntu session");
+            Toast.makeText(activity, UiLanguage.text("Включён резервный вывод Ubuntu."), Toast.LENGTH_LONG).show();
             start(vm, true);
-            return;
         }
-        Log.w("UAVF-H264", "Requested display " + requested + " failed; fallback requires confirmation");
-        fallbackDialog = ProductDialog.show(activity, "Графический вывод",
-                "Не удалось подключить видеопоток с выбранным разрешением.", "Резервный", false, () -> {
-                    if (mayReconnect(vm, epoch)) start(vm, true);
-                });
     }
 
     private boolean mayReconnect(Object vm, int epoch) {
@@ -227,8 +233,27 @@ final class UbuntuDisplaySession {
     }
 
     private void openRaw(Object vm, int epoch) {
+        long deadline = SystemClock.elapsedRealtime() + RAW_READY_MS;
+        var ready = new java.util.concurrent.atomic.AtomicBoolean();
+        connectRaw(vm, epoch, deadline, ready);
+        ui.postDelayed(() -> {
+            if (!mayReconnect(vm, epoch) || ready.get()) return;
+            connection.begin();
+            transition.failure("Ubuntu produced no frame on the fallback display.",
+                    SystemClock.elapsedRealtime());
+        }, RAW_READY_MS);
+    }
+
+    private void connectRaw(Object vm, int epoch, long deadline,
+                            java.util.concurrent.atomic.AtomicBoolean ready) {
         File report = new File(activity.getExternalFilesDir(null), "ubuntu-gnome-frame-bridge-report.txt");
-        new RawDisplayReceiver(vm, connection, epoch, report, frameView::performanceSnapshot,
-                host::presentRawFrame, host::show).start();
+        new RawDisplayReceiver(vm, connection, epoch, report, frameView::performanceSnapshot, frame -> {
+            ready.set(true);
+            host.presentRawFrame(frame);
+        }, host::show, () -> ui.postDelayed(() -> {
+            if (!ready.get() && mayReconnect(vm, epoch) && SystemClock.elapsedRealtime() < deadline) {
+                connectRaw(vm, epoch, deadline, ready);
+            }
+        }, 1000)).start();
     }
 }

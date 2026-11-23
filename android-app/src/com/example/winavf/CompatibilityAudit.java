@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.UiLanguage;
+
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
@@ -16,17 +18,25 @@ import java.util.Arrays;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
-import static com.example.winavf.AvfCompatibilityProbe.Status;
+import com.example.winavf.diagnostics.CompatibilityChecks;
+import com.example.winavf.diagnostics.CompatibilityStatus;
 
 /** Checks the local AVF prerequisites, runs the VM proof, and records its result. */
 final class CompatibilityAudit {
     static final int SCHEMA = 3;
+    static final String WAITING_FOR_PERMISSIONS = "compatibility_waiting_for_permissions";
+    static final String PERMISSION_REQUIRED = "Failed · permission required";
+    private static final String PERMISSION_GRANTED = "Passed · granted";
     private final Context context;
     private final SharedPreferences preferences;
     private final BooleanSupplier permissions;
 
-    record Result(String id, Status status, String[] checks, long guestMemoryBytes) {}
-    private record Evidence(Status status, String details, String report, long guestMemoryBytes) {}
+    record Result(String id, CompatibilityStatus status, String[] checks, long guestMemoryBytes) {
+        boolean permissionGranted() {
+            return PERMISSION_GRANTED.equals(checks[CompatibilityChecks.AVF_PERMISSIONS]);
+        }
+    }
+    private record Evidence(CompatibilityStatus status, String details, String report, long guestMemoryBytes) {}
     CompatibilityAudit(Context context, SharedPreferences preferences, BooleanSupplier permissions) {
         this.context = context;
         this.preferences = preferences;
@@ -34,7 +44,7 @@ final class CompatibilityAudit {
     }
 
     Result run(BiConsumer<Integer, String> progress) {
-        String[] checks = new String[FigmaCompatibilityView.CHECKS.length];
+        String[] checks = new String[CompatibilityChecks.LABELS.size()];
         Arrays.fill(checks, "Not checked");
         Evidence evidence;
         try {
@@ -57,11 +67,12 @@ final class CompatibilityAudit {
         setCheck(checks, progress, 1, managerError.isEmpty() ? "Passed · AVF API available"
                 : "Failed · AVF manager unavailable");
         boolean permissionGranted = permissions.getAsBoolean();
-        setCheck(checks, progress, 2, permissionGranted ? "Passed · granted" : "Failed · permission required");
+        setCheck(checks, progress, CompatibilityChecks.AVF_PERMISSIONS,
+                permissionGranted ? PERMISSION_GRANTED : PERMISSION_REQUIRED);
         String platformError = platformError();
         setCheck(checks, progress, 3, platformError.isEmpty() ? "Passed · SHA-256 verified" : platformError);
 
-        if (!arm64) return new Evidence(Status.INCOMPATIBLE, "The Android device does not expose an ARM64 ABI.", "", 0);
+        if (!arm64) return new Evidence(CompatibilityStatus.INCOMPATIBLE, "The Android device does not expose an ARM64 ABI.", "", 0);
         if (!permissionGranted) return unavailable("Custom VM permission was not granted.");
         if (!platformError.isEmpty()) return unavailable(platformError);
         if (!managerError.isEmpty()) return unavailable(managerError);
@@ -116,18 +127,22 @@ final class CompatibilityAudit {
         return new Evidence(result.status(), result.details(), result.report(), result.guestMemoryBytes());
     }
 
-    private void save(String id, String[] checks, Status outcome, String report) {
+    private void save(String id, String[] checks, CompatibilityStatus outcome, String report) {
         String history = preferences.getString("compatibility_history_v1", "");
         if (history.isEmpty()) history = migratePreviousRun();
         history = CompatibilityHistory.append(history, new CompatibilityHistory.Run(Instant.now(), id, outcome.name(), report));
+        boolean waitingForPermission = PERMISSION_REQUIRED.equals(checks[CompatibilityChecks.AVF_PERMISSIONS]);
         var saved = preferences.edit().putString("compatibility_checked_build", Build.FINGERPRINT)
                 .putInt("compatibility_check_schema", SCHEMA)
                 .putString("compatibility_avf_status", outcome.name())
                 .putString("compatibility_run_id", id)
                 .putString("compatibility_history_v1", history)
+                .putBoolean(WAITING_FOR_PERMISSIONS, waitingForPermission)
                 .putString("compatibility_execution_report", report);
         for (int index = 0; index < checks.length; index++) saved.putString("compatibility_result_" + index, checks[index]);
-        saved.apply();
+        // An ADB permission change can terminate this process as soon as the user sees the instructions.
+        if (waitingForPermission) saved.commit();
+        else saved.apply();
     }
 
     private String migratePreviousRun() {
@@ -135,7 +150,7 @@ final class CompatibilityAudit {
         String report = preferences.getString("compatibility_execution_report", "");
         if (!id.matches("[0-9a-f]{32}") || report.isBlank()) return "";
         return CompatibilityHistory.append("", new CompatibilityHistory.Run(null, id,
-                preferences.getString("compatibility_avf_status", Status.INSUFFICIENT_DATA.name()), report));
+                preferences.getString("compatibility_avf_status", CompatibilityStatus.INSUFFICIENT_DATA.name()), report));
     }
 
     private static String formatReport(String[] checks, Evidence evidence) {
@@ -143,7 +158,7 @@ final class CompatibilityAudit {
         report.append("DEVICE=").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
                 .append("\nANDROID_SDK=").append(Build.VERSION.SDK_INT).append('\n');
         for (int index = 0; index < checks.length; index++) {
-            report.append(UiLanguage.english(FigmaCompatibilityView.CHECKS[index])).append(" = ")
+            report.append(UiLanguage.english(CompatibilityChecks.LABELS.get(index))).append(" = ")
                     .append(checks[index]).append('\n');
         }
         if (evidence.report().isEmpty()) {
@@ -173,6 +188,6 @@ final class CompatibilityAudit {
     }
 
     private static Evidence unavailable(String reason) {
-        return new Evidence(Status.INSUFFICIENT_DATA, reason, "", 0);
+        return new Evidence(CompatibilityStatus.INSUFFICIENT_DATA, reason, "", 0);
     }
 }

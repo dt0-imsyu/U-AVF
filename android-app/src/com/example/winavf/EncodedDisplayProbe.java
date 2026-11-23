@@ -55,6 +55,28 @@ final class EncodedDisplayProbe {
     private boolean fallbackRestored;
     private volatile boolean sessionStreamEnded;
     boolean retryableSessionEnd() { return sessionStreamEnded; }
+    boolean hasDesktopFrame() { return firstFrame; }
+    /*
+     * How long the guest may hold an accepted display socket open without
+     * sending a single frame. A restarted guest can accept the vsock connection
+     * while its capture session is not running yet, and a blocking read() on
+     * that socket never returns on its own. Without this deadline the receiver
+     * stays in "connecting" forever and the raw fallback is never offered.
+     */
+    private static final long FIRST_FRAME_TIMEOUT_MS = 20_000;
+    /** Absolute deadline for the first frame, or 0 when not armed. */
+    private volatile long firstFrameDeadline;
+    /** Set when the watchdog ended a stream that never produced a frame. */
+    private volatile boolean abortedWaitingForFrame;
+    /** Closes the stream so a stuck readExactly() returns and the retry path runs. */
+    private void abortStream() {
+        ParcelFileDescriptor current = fd;
+        if (current == null) return;
+        abortedWaitingForFrame=true;
+        try { android.system.Os.shutdown(current.getFileDescriptor(), android.system.OsConstants.SHUT_RDWR); }
+        catch (Exception ignored) {}
+        try { current.close(); } catch (Exception ignored) {}
+    }
     int streamWidth() { return streamWidth; }
     int streamHeight() { return streamHeight; }
     void onStreamGeometry(Runnable action) {onStreamGeometry=action;}
@@ -257,6 +279,16 @@ final class EncodedDisplayProbe {
             status.setText(line);
             synchronized (EncodedDisplayProbe.this) { if (report != null) { report.println(line); report.flush(); } }
             android.util.Log.i("UAVF-H264", line);
+            /*
+             * Watchdog: a connected guest that never produces a frame must not
+             * leave the receiver wedged. Closing the descriptor makes the
+             * blocked read fail and routes into the normal retry/fallback path.
+             */
+            long deadline=firstFrameDeadline;
+            if (r==0 && deadline!=0 && now>deadline*1_000_000L && !stopping) {
+                android.util.Log.w("UAVF-H264","no display frame within "+FIRST_FRAME_TIMEOUT_MS+" ms; ending stream");
+                abortStream();
+            }
             lastTime=now; lastReceived=r; lastDecoded=d; lastRendered=p; lastBytes=b;
             if (!stopping) main.postDelayed(this, 1000);
         }
@@ -279,7 +311,10 @@ final class EncodedDisplayProbe {
                 int generation=-1, lastSequence=-1;
                 boolean negotiatedSize=false;
                 long diagnosticBytes=0;
+                firstFrameDeadline=SystemClock.elapsedRealtime()+FIRST_FRAME_TIMEOUT_MS;
                 while (!stopping) {
+                    // The watchdog aborts the descriptor when the first frame is
+                    // overdue, so this blocking read cannot hang forever.
                     readExactly(input,header);
                     ByteBuffer h=ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
                     if(h.getInt(0)!=0x31465655 || h.getShort(4)!=1 || h.getInt(8)!=1) throw new IllegalArgumentException("Bad UVF1 AVC header");
@@ -383,7 +418,8 @@ final class EncodedDisplayProbe {
         } catch(Throwable e) {
             // Reconnect through a GDM handoff even when its first replacement
             // socket closes before the new session can produce a frame.
-            sessionStreamEnded=embedded && !stopping && e instanceof java.io.EOFException;
+            sessionStreamEnded=embedded && !stopping
+                    && (e instanceof java.io.EOFException || abortedWaitingForFrame);
             synchronized(this) { if(report!=null) { report.println("ERROR="+e); report.flush(); } }
             if (!stopping) {
                 android.util.Log.e("UAVF-H264","encoded probe",e);
@@ -415,6 +451,11 @@ final class EncodedDisplayProbe {
         stopping=true;
         surfaceSized.countDown();
         main.removeCallbacks(metrics);
+        // A fresh receiver must be able to reconnect after this one ends;
+        // leaving these latched made one failed attempt permanent.
+        receiveStarted.set(false);
+        reconnectPosted.set(false);
+        firstFrameDeadline=0;
         if(fd!=null) {
             try { android.system.Os.shutdown(fd.getFileDescriptor(),android.system.OsConstants.SHUT_RDWR); } catch(Exception ignored) {}
             try { fd.close(); } catch(Exception ignored) {} fd=null;

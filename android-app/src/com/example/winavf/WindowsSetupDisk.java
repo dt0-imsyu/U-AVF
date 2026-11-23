@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.UiLanguage;
+
 import android.content.Context;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -15,29 +14,33 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.function.Consumer;
-import java.util.zip.CRC32;
 
-/** Builds a new Windows Setup disk in private storage from the verified WinPE profile. */
+/** Builds a new Windows Setup disk in private storage from the selected ISO. */
 final class WindowsSetupDisk {
     private static final long GIB = 1024L * 1024 * 1024;
     static final long MEDIA_BYTES = WindowsSetupLayout.MEDIA_BYTES;
     static final long TARGET_BYTES = WindowsSetupLayout.TARGET_BYTES;
-    static final String INSTALL_BUILD = "26200.6584";
-    static final String REFERENCE_TEMPLATE = "windows-display-live-name-fix-20261008.img";
     static final long RESERVE_BYTES = 5 * GIB;
     private static final long PREPARATION_HEADROOM = 64L * 1024 * 1024;
     // The retained installation consumed 9.77 GiB beyond its WinPE disk.
     private static final long INSTALL_HEADROOM = 10 * GIB;
     private static final int SECTOR = WindowsSetupLayout.SECTOR;
     private static final int ESP_OFFSET = 1024 * 1024;
-    private static final int TABLE_BYTES = WindowsSetupLayout.TABLE_BYTES;
-    private static final String TEMPLATE_SHA = "A1DE9652E81A173BC4E242CFA53F23C4D8AD31C2D54500397650F894D927DF2A";
-    // The retained 25H2 ARM64 ru-RU payload report pins the source of both SWMs in the template.
-    private static final long INSTALL_WIM_BYTES = 6_347_029_986L;
-    private static final String INSTALL_WIM_SHA = "293DFA0750995884136952EC54BBB292E037CF2FB77E284C54DC8885E2537131";
+    private static final long SOURCE_PARTITION_BYTES = MEDIA_BYTES - ESP_OFFSET - 33 * SECTOR;
+    private static final long SPLIT_WIM_PART_BYTES = 3500L * 1024 * 1024;
+    private static final long BOOT_STAGING_BYTES = 2 * GIB;
+    /*
+     * Space reservation for the extracted installation image. This is not a
+     * compatibility gate: it only decides whether the device can hold the
+     * split parts. It is sized for the largest retail install.wim observed so
+     * far (26H2 en-US, 7.09 GiB) with room for a future release to grow.
+     */
+    private static final long INSTALL_WIM_RESERVE_BYTES = 8 * GIB;
+    private static final String GENERATED_BOOT_HASH = "iso_boot_wim_sha256";
     private static final String BOOT_EFI_SHA = "893B7859B6E27598B8392F5EC9A9FB33C948FCAF4EF1918F28072ED5AB402E8B";
     private static final String NATIVE_DISPLAY_EFI_SHA = "688299BB5CA7DD8DE60D69EA03D3049D946CB57BE6CAA6F0BE3CFEA11E6B4957";
     private static final String SMP_DISPLAY_EFI_SHA = "359DED6E811F23B011566938B6F3CC8A01DF480D5E8225A320FEFE357CD98E3A";
@@ -78,20 +81,29 @@ final class WindowsSetupDisk {
         }
     }
 
-    static long requiredFreeBytes() { return RESERVE_BYTES + MEDIA_BYTES + PREPARATION_HEADROOM; }
+    static long requiredFreeBytes() {
+        return RESERVE_BYTES + MEDIA_BYTES + INSTALL_WIM_RESERVE_BYTES + BOOT_STAGING_BYTES + PREPARATION_HEADROOM;
+    }
     static long requiredInstallFreeBytes() { return RESERVE_BYTES + INSTALL_HEADROOM; }
 
+    /**
+     * Rejects media that cannot produce a working installation.
+     *
+     * An ESD cannot be read by the splitter, so it is refused. The WIM size is
+     * whatever the selected ISO contains: pinning one number would reject every
+     * other release and language while adding no safety, because the split and
+     * the install itself both read their length from this same measurement.
+     */
     static void requireMatchingPayload(WindowsInstallIso.Inspection iso) throws IOException {
-        if (iso.esd() || iso.installBytes() != INSTALL_WIM_BYTES) {
-            throw new IOException(UiLanguage.text("Для шаблона WinPE нужен install.wim из Windows 11 ARM64 25H2 (ru-RU)."));
+        if (iso.esd() || iso.installBytes() <= 0) {
+            throw new IOException(UiLanguage.text(
+                    "Нужен install.wim в формате WIM (не ESD) из ARM64-образа Windows."));
         }
     }
 
     static WindowsInstallIso.Inspection verifyInstallIso(ParcelFileDescriptor file) throws IOException {
         var inspection = WindowsInstallIso.inspect(file);
         requireMatchingPayload(inspection);
-        if (!INSTALL_WIM_SHA.equals(WindowsInstallIso.installDigest(file, INSTALL_WIM_BYTES)))
-            throw new IOException(UiLanguage.text("Контрольная сумма install.wim не совпадает с профилем WinPE."));
         return inspection;
     }
 
@@ -99,97 +111,73 @@ final class WindowsSetupDisk {
         return context.getFilesDir().toPath().resolve("windows-25h2-setup.raw");
     }
 
-    static synchronized void prepare(Context context, ParcelFileDescriptor iso, ParcelFileDescriptor template,
-                        Consumer<Phase> phase)
+    static boolean isoSetupAvailable(Context context) {
+        return available() && WindowsInstallIso.available() && WindowsIsoBootRuntime.available(context)
+                && installToolsAvailable(context);
+    }
+
+    static synchronized void prepare(Context context, ParcelFileDescriptor iso, Consumer<Phase> phase)
             throws IOException {
-        if (!available()) throw new IOException("The Windows Setup disk builder is unavailable.");
+        if (!isoSetupAvailable(context)) throw new IOException("The packaged Windows Setup runtime is unavailable.");
         phase.accept(Phase.CHECKING);
         Path root = context.getFilesDir().toPath().toRealPath();
         Path workspace = root.resolve(workspace(context).getFileName());
         if (Files.exists(workspace, LinkOption.NOFOLLOW_LINKS))
             throw new IOException("A new private Windows workspace path is required.");
-        if (template.getStatSize() != MEDIA_BYTES)
-            throw new IOException("The verified WinPE template is missing.");
-        MediaProfile guided = guidedProfile(context);
-        // The pinned template contains the complete, verified SWMs from this
-        // verified installation image. Validate the ISO payload on the open descriptor.
-        Path staging = root.resolve(".windows-25h2-setup.pending");
-        Path partsDirectory = staging.resolve("parts");
-        Path candidate = staging.resolve("workspace.raw");
         verifyInstallIso(iso);
-        if (Files.isDirectory(staging, LinkOption.NOFOLLOW_LINKS))
-            cleanStaging(staging, candidate, partsDirectory);
         if (root.toFile().getUsableSpace() < requiredFreeBytes())
-            throw new IOException("Not enough space to prepare Windows while preserving the 5 GiB device reserve.");
+            throw new IOException("Not enough space to assemble Windows Setup and preserve the device reserve.");
 
-        Files.createDirectory(staging);
+        Path staging = Files.createTempDirectory(root, ".windows-iso-");
         try {
             phase.accept(Phase.COPYING);
-            String templateSha = copyTemplate(template, candidate);
-            if (!TEMPLATE_SHA.equals(templateSha) && (guided == null || !guided.templateSha.equals(templateSha)))
-                throw new IOException("WinPE template digest differs.");
+            Path boot = Files.createDirectory(staging.resolve("winpe"));
+            var runtime = WindowsIsoBootRuntime.prepare(context, iso, boot);
+            Path candidate = staging.resolve("workspace.raw");
+            Path parts = Files.createDirectory(staging.resolve("parts"));
+            buildIsoSource(context, iso, candidate, parts);
             phase.accept(Phase.FINALIZING);
-            if (guided != null && TEMPLATE_SHA.equals(templateSha)) {
-                applyGuidedDelta(context, candidate);
-                templateSha = guided.templateSha;
+            stageBootRuntime(candidate, runtime);
+            verifyInstallTools(context, candidate, true);
+            verifyFreshGpt(candidate);
+
+            String[] hashes;
+            try (var disk = ParcelFileDescriptor.open(candidate.toFile(), ParcelFileDescriptor.MODE_READ_ONLY)) {
+                hashes = auditBootFiles(disk, ESP_OFFSET, SOURCE_PARTITION_BYTES);
             }
-            try (var readback = Files.newInputStream(candidate, LinkOption.NOFOLLOW_LINKS)) {
-                if (!templateSha.equals(sha(readback))) throw new IOException("WinPE staging readback differs.");
+            String expectedWim;
+            try (var streamed = Files.newInputStream(runtime.wim())) {
+                expectedWim = sha(streamed);
             }
-            if (installToolsAvailable(context)) verifyInstallTools(context, candidate, true);
-            expandGpt(candidate);
-            verifyFresh(context, candidate);
+            if (!WindowsIsoBootRuntime.EFI_SHA.equals(hashes[0]) || !expectedWim.equals(hashes[1]))
+                throw new IOException("Generated Windows Setup boot files failed readback.");
             if (root.toFile().getUsableSpace() < RESERVE_BYTES)
                 throw new IOException("The storage reserve changed during Windows preparation.");
+
+            var provenance = context.getSharedPreferences("windows_setup_provenance", Context.MODE_PRIVATE);
+            if (!provenance.edit().putString(GENERATED_BOOT_HASH, hashes[1]).commit())
+                throw new IOException("Could not record the verified Windows boot image.");
             publish(candidate, workspace);
-        } catch (IOException | RuntimeException error) {
-            try { cleanStaging(staging, candidate, partsDirectory); }
-            catch (IOException cleanup) { error.addSuppressed(cleanup); }
-            throw error;
-        }
-        try { cleanStaging(staging, candidate, partsDirectory); }
-        catch (IOException cleanup) { Log.w("UAVF-Windows-Setup", "Could not clear staging", cleanup); }
-    }
-
-    private static void applyGuidedDelta(Context context, Path candidate) throws IOException {
-        final int blockBytes = 1024 * 1024;
-        try (var delta = context.getAssets().open("windows-setup/guided.delta");
-             var disk = new RandomAccessFile(candidate.toFile(), "rw")) {
-            var header = ByteBuffer.wrap(delta.readNBytes(20)).order(ByteOrder.LITTLE_ENDIAN);
-            if (header.remaining() != 20 || header.getLong() != 0x3130303050445755L
-                    || header.getLong() != MEDIA_BYTES)
-                throw new IOException("Invalid guided WinPE delta header");
-            int count = header.getInt();
-            if (count < 1 || count > 31) throw new IOException("Invalid guided WinPE delta size");
-            long end = 0;
-            byte[] old = new byte[blockBytes];
-            for (int i = 0; i < count; i++) {
-                var record = ByteBuffer.wrap(delta.readNBytes(20)).order(ByteOrder.LITTLE_ENDIAN);
-                if (record.remaining() != 20) throw new IOException("Truncated guided WinPE delta");
-                long offset = record.getLong();
-                int size = record.getInt();
-                int before = record.getInt(), after = record.getInt();
-                if (size != blockBytes || offset < end || offset % blockBytes != 0
-                        || offset > MEDIA_BYTES - size)
-                    throw new IOException("Invalid guided WinPE delta range");
-                byte[] bytes = delta.readNBytes(size);
-                disk.seek(offset);
-                disk.readFully(old);
-                if (bytes.length != size || blockCrc(old) != before || blockCrc(bytes) != after)
-                    throw new IOException("Guided WinPE delta block failed verification");
-                disk.seek(offset);
-                disk.write(bytes);
-                end = offset + size;
+        } finally {
+            try (var paths = Files.walk(staging)) {
+                for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+            } catch (IOException cleanup) {
+                Log.w("UAVF-Windows-Setup", "Could not clear ISO staging", cleanup);
             }
-            if (delta.read() != -1) throw new IOException("Unexpected guided WinPE delta data");
-            disk.getFD().sync();
         }
     }
 
-    private static int blockCrc(byte[] bytes) {
-        CRC32 crc = new CRC32();
-        crc.update(bytes);
-        return (int) crc.getValue();
+    private static void stageBootRuntime(Path candidate, WindowsIsoBootRuntime.FilesForBoot runtime)
+            throws IOException {
+        try (var disk = ParcelFileDescriptor.open(candidate.toFile(), ParcelFileDescriptor.MODE_READ_WRITE);
+             var wim = ParcelFileDescriptor.open(runtime.wim().toFile(), ParcelFileDescriptor.MODE_READ_ONLY);
+             var loader = ParcelFileDescriptor.open(runtime.loader().toFile(), ParcelFileDescriptor.MODE_READ_ONLY);
+             var bcd = ParcelFileDescriptor.open(runtime.bcd().toFile(), ParcelFileDescriptor.MODE_READ_ONLY);
+             var firmware = ParcelFileDescriptor.open(runtime.firmware().toFile(), ParcelFileDescriptor.MODE_READ_ONLY)) {
+            int status = stageIsoBootRuntime(disk.getFd(), ESP_OFFSET, SOURCE_PARTITION_BYTES,
+                    wim.getFd(), loader.getFd(), bcd.getFd(), firmware.getFd());
+            if (status != 0) throw new IOException("Could not stage the Windows boot runtime (" + status + ").");
+        }
     }
 
     /** Checks an unpartitioned Setup target before it is admitted to first boot. */
@@ -206,8 +194,10 @@ final class WindowsSetupDisk {
         try (ParcelFileDescriptor descriptor = ParcelFileDescriptor.open(disk.toFile(),
                 ParcelFileDescriptor.MODE_READ_ONLY)) {
             String[] hashes = auditBootFiles(descriptor, ESP_OFFSET, MEDIA_BYTES - ESP_OFFSET - 33 * SECTOR);
-            boolean guidedBoot = guided != null && guided.bootWimSha.equals(hashes[1]);
             boolean smp = SMP_DISPLAY_EFI_SHA.equals(hashes[0]);
+            boolean fromIso = smp && hashes[1].equals(context.getSharedPreferences(
+                    "windows_setup_provenance", Context.MODE_PRIVATE).getString(GENERATED_BOOT_HASH, ""));
+            boolean guidedBoot = fromIso || guided != null && guided.bootWimSha.equals(hashes[1]);
             if ((!smp && !BOOT_EFI_SHA.equals(hashes[0]) && !NATIVE_DISPLAY_EFI_SHA.equals(hashes[0]))
                     || (!BOOT_WIM_SHA.equals(hashes[1]) && !guidedBoot))
                 throw new IOException("The verified Windows Setup boot files have changed.");
@@ -215,13 +205,20 @@ final class WindowsSetupDisk {
         }
     }
 
-    static boolean hasGuidedProfile(Context context) throws IOException { return guidedProfile(context) != null; }
 
     static void setInstallApproval(Path disk, boolean approve) throws IOException {
         try (var descriptor = ParcelFileDescriptor.open(disk.toFile(), ParcelFileDescriptor.MODE_READ_WRITE)) {
             int result = setApproval(descriptor.getFd(), ESP_OFFSET,
                     MEDIA_BYTES - ESP_OFFSET - 33 * SECTOR, approve);
             if (result != 0) throw new IOException("Windows install approval could not be updated (" + result + ")");
+        }
+    }
+
+    static void requireUnapprovedSetup(Path disk) throws IOException {
+        try (var volume = Fat32Volume.open(disk.toFile())) {
+            if (volume.exists("UAVF", "INSTALL.OK")) {
+                throw new IOException("Automatic installation is staged on this disk. Choose another Windows Setup mode before opening read-only Setup.");
+            }
         }
     }
 
@@ -302,22 +299,29 @@ final class WindowsSetupDisk {
         if (result != 0) throw new IOException("Could not publish a new Windows disk (errno " + result + ").");
     }
 
-    private static void cleanStaging(Path staging, Path candidate, Path partsDirectory) throws IOException {
-        Files.deleteIfExists(candidate);
-        if (Files.isDirectory(partsDirectory, LinkOption.NOFOLLOW_LINKS)) {
-            try (var contents = Files.newDirectoryStream(partsDirectory)) {
-                for (Path part : contents) {
-                    if (!part.getFileName().toString().matches("install(?:[2-9]|[1-9][0-9]+)?\\.swm"))
-                        throw new IOException("Unexpected file in Windows Setup staging.");
-                    Files.deleteIfExists(part);
-                }
+    /** Assemble only into an empty staging path. The caller still has to stage and audit the boot runtime. */
+    static void buildIsoSource(Context context, ParcelFileDescriptor iso, Path candidate, Path partsDirectory)
+            throws IOException {
+        try (var payload = WindowsInstallIso.openPayload(context, iso, false)) {
+            List<Path> parts = WindowsWimPayload.split(payload, partsDirectory, SPLIT_WIM_PART_BYTES);
+            WindowsSetupLayout.createFresh(candidate);
+            try (var destination = ParcelFileDescriptor.open(candidate.toFile(),
+                    ParcelFileDescriptor.MODE_READ_WRITE)) {
+                int result = createSource(iso.getFd(), destination.getFd(), ESP_OFFSET, SOURCE_PARTITION_BYTES);
+                if (result != 0) throw new IOException("Could not stage Windows ISO files (" + result + ").");
+                putParts(destination, ESP_OFFSET, SOURCE_PARTITION_BYTES, parts, false);
             }
-            Files.delete(partsDirectory);
+            verifyFreshGpt(candidate);
         }
-        Files.delete(staging);
     }
 
     static void putParts(ParcelFileDescriptor destination, long offset, long length, List<Path> parts)
+            throws IOException {
+        putParts(destination, offset, length, parts, true);
+    }
+
+    private static void putParts(ParcelFileDescriptor destination, long offset, long length, List<Path> parts,
+                                 boolean replaceExisting)
             throws IOException {
         if (parts.size() < 2 || parts.size() > 9)
             throw new IOException("Expected between two and nine split WIM parts.");
@@ -330,77 +334,14 @@ final class WindowsSetupDisk {
                 inputs.add(ParcelFileDescriptor.open(parts.get(index).toFile(), ParcelFileDescriptor.MODE_READ_ONLY));
             }
             int[] descriptors = inputs.stream().mapToInt(ParcelFileDescriptor::getFd).toArray();
-            int result = writeParts(destination.getFd(), offset, length, descriptors);
+            int result = replaceExisting ? writeParts(destination.getFd(), offset, length, descriptors)
+                    : writeNewParts(destination.getFd(), offset, length, descriptors);
             if (result != 0) throw new IOException("Windows Setup FAT write/readback failed (" + result + ").");
         } finally {
             for (ParcelFileDescriptor input : inputs) {
                 try { input.close(); } catch (IOException ignored) {}
             }
         }
-    }
-
-    private static String copyTemplate(ParcelFileDescriptor template, Path candidate) throws IOException {
-        byte[] buffer = new byte[1024 * 1024], zeros = new byte[buffer.length];
-        MessageDigest digest = digest();
-        try (var input = new ParcelFileDescriptor.AutoCloseInputStream(
-                     ParcelFileDescriptor.dup(template.getFileDescriptor()));
-             RandomAccessFile disk = new RandomAccessFile(Files.createFile(candidate).toFile(), "rw")) {
-            input.getChannel().position(0);
-            for (long offset = 0; offset < MEDIA_BYTES; offset += buffer.length) {
-                if (input.readNBytes(buffer, 0, buffer.length) != buffer.length)
-                    throw new IOException("WinPE template ended early.");
-                digest.update(buffer);
-                if (Arrays.equals(buffer, zeros)) disk.seek(offset + buffer.length);
-                else disk.write(buffer);
-            }
-            if (input.read() != -1) throw new IOException("Unexpected bytes after the WinPE template.");
-            disk.setLength(MEDIA_BYTES);
-            disk.getFD().sync();
-        }
-        return HexFormat.of().withUpperCase().formatHex(digest.digest());
-    }
-
-    private static void expandGpt(Path candidate) throws IOException {
-        byte[] mbr = new byte[SECTOR], primary = new byte[SECTOR], table = new byte[TABLE_BYTES];
-        try (RandomAccessFile disk = new RandomAccessFile(candidate.toFile(), "rw")) {
-            disk.readFully(mbr);
-            disk.readFully(primary);
-            disk.readFully(table);
-            long last = TARGET_BYTES / SECTOR - 1;
-            ByteBuffer.wrap(mbr).order(ByteOrder.LITTLE_ENDIAN).putInt(458, (int)last);
-            byte[] first = growHeader(primary, 1, last, 2, last - 33);
-            byte[] backup = growHeader(primary, last, 1, last - 32, last - 33);
-            disk.seek(0);
-            disk.write(mbr);
-            disk.write(first);
-            long tail = (last - 32) * SECTOR;
-            disk.seek(tail);
-            disk.write(table);
-            disk.write(backup);
-            disk.getFD().sync();
-            verify(disk, 0, mbr);
-            verify(disk, SECTOR, first);
-            verify(disk, tail, table);
-            verify(disk, last * SECTOR, backup);
-        }
-    }
-
-    private static byte[] growHeader(byte[] original, long current, long alternate, long table, long lastUsable) {
-        byte[] header = original.clone();
-        ByteBuffer fields = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
-        fields.putLong(24, current).putLong(32, alternate).putLong(48, lastUsable).putLong(72, table);
-        fields.putInt(16, 0);
-        CRC32 crc = new CRC32();
-        crc.update(header, 0, fields.getInt(12));
-        fields.putInt(16, (int)crc.getValue());
-        return header;
-    }
-
-    private static void verify(RandomAccessFile disk, long offset, byte[] expected) throws IOException {
-        byte[] actual = new byte[expected.length];
-        disk.seek(offset);
-        disk.readFully(actual);
-        if (!Arrays.equals(actual, expected)) throw new IOException("Windows GPT readback differs.");
     }
 
     private static MessageDigest digest() {
@@ -416,6 +357,10 @@ final class WindowsSetupDisk {
     }
 
     private static native int writeParts(int output, long offset, long length, int[] parts);
+    private static native int writeNewParts(int output, long offset, long length, int[] parts);
+    private static native int createSource(int iso, int output, long offset, long length);
+    private static native int stageIsoBootRuntime(
+            int output, long offset, long length, int wim, int loader, int bcd, int firmware);
     private static native int auditFat(int input, long offset, long length, MessageDigest efi, MessageDigest wim);
     private static native int checkInstallTools(int fd, long offset, long length, byte[][] tools, boolean write);
     private static native int readInstalledBcd(int fd, long offset, long length, byte[] output);

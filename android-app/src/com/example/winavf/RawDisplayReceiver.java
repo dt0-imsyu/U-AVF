@@ -28,6 +28,7 @@ final class RawDisplayReceiver implements ConsoleFrameDecoder.Listener {
     private final Supplier<long[]> surfaceCounters;
     private final Consumer<ConsoleFrameDecoder.Frame> onFrame;
     private final Consumer<String> warning;
+    private final Runnable ended;
     private final ConsoleFrameDecoder decoder = new ConsoleFrameDecoder(this);
     private long frames, blackFrames, usableFrames;
     private long bytes, decodeNanos;
@@ -35,7 +36,7 @@ final class RawDisplayReceiver implements ConsoleFrameDecoder.Listener {
 
     RawDisplayReceiver(Object vm, DisplayConnection connection, int epoch, File report,
                        Supplier<long[]> surfaceCounters, Consumer<ConsoleFrameDecoder.Frame> onFrame,
-                       Consumer<String> warning) {
+                       Consumer<String> warning, Runnable ended) {
         this.vm = vm;
         this.connection = connection;
         this.epoch = epoch;
@@ -43,6 +44,7 @@ final class RawDisplayReceiver implements ConsoleFrameDecoder.Listener {
         this.surfaceCounters = surfaceCounters;
         this.onFrame = onFrame;
         this.warning = warning;
+        this.ended = ended;
     }
 
     void start() { new Thread(this::receive, "WinAVF-ubuntu-frame-bridge").start(); }
@@ -79,6 +81,8 @@ final class RawDisplayReceiver implements ConsoleFrameDecoder.Listener {
             }
         } catch (IOException failure) {
             if (connection.current(epoch)) warning.accept("Could not write frame bridge report: " + failure.getMessage());
+        } finally {
+            if (connection.current(epoch)) ended.run();
         }
     }
 

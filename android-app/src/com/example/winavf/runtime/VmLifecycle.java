@@ -37,6 +37,11 @@ public final class VmLifecycle {
     public static boolean compatibilityProbeActive() { return COMPATIBILITY_PROBE.get(); }
     public static void endCompatibilityProbe() { COMPATIBILITY_PROBE.set(false); }
     public synchronized void stopping() { if (busy()) state=State.STOPPING; }
+    public synchronized boolean cancelUnattachedStart() {
+        if (owner != null || state != State.STARTING) return false;
+        state = State.STOPPING;
+        return true;
+    }
     public synchronized void failStart(String detail) { state=State.ERROR; error=detail; }
     public synchronized void install(Install value) { install=value; }
     public synchronized boolean stopped(Object vm,String reason) {

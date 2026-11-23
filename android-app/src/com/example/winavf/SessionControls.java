@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.input.GuestIme;
+import com.example.winavf.input.GuestInput;
+
+import com.example.winavf.ui.DropdownMenu;
+import com.example.winavf.ui.ProductDialog;
+import com.example.winavf.ui.ProductFont;
+import com.example.winavf.ui.SessionDrawer;
+import com.example.winavf.ui.UiLanguage;
+
 import android.app.Activity;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
@@ -18,9 +27,9 @@ final class SessionControls {
         boolean frameVisible();
         boolean homeVisible();
         boolean windows();
+        boolean canRestart();
         boolean vmRunning();
         void preferences(String tab);
-        void home();
         void shutdown();
         void reboot();
     }
@@ -138,11 +147,15 @@ final class SessionControls {
         boolean windows = host.windows();
         Mode mode = surfaces.renderer() != null ? Mode.MAVK : surfaces.decoder() != null ? Mode.H264 : Mode.FALLBACK;
         String graphics = windows ? "H.264" : UbuntuSettingsTabs.displayLabel(mode);
-        Runnable restart = windows ? null : () -> ProductDialog.show(activity, "Перезагрузить Ubuntu?",
-                "Сохраните работу в Ubuntu. U-AVF переподключится после перезагрузки.", "Перезагрузить", false, host::reboot);
-        var controls = new FigmaSessionMenu(activity, restoreCapture ? "Захват мыши" : "Мышь", graphics,
+        Runnable restart = host.canRestart() ? () -> ProductDialog.show(activity,
+                windows ? "Перезапустить VM принудительно?" : "Перезагрузить Ubuntu?",
+                windows ? "Питание Windows будет отключено. Несохранённые данные могут быть потеряны."
+                        : "Сохраните работу в Ubuntu. U-AVF переподключится после перезагрузки.",
+                "Перезагрузить", windows, host::reboot) : null;
+        boolean temporary = !windows && activity.getPreferences(0).getBoolean("linux_current_boot_temporary", false);
+        var controls = new SessionDrawer(activity, temporary, restoreCapture ? "Захват мыши" : "Мышь", graphics,
                 this::close, this::choosePointerMode, this::chooseDisplayMode, () -> host.preferences("Performance"),
-                host::home, host::shutdown, restart);
+                host::shutdown, restart);
         drawer.addView(controls, new LinearLayout.LayoutParams(-1, -1));
     }
 
@@ -161,7 +174,7 @@ final class SessionControls {
         }
         var settings = new DisplaySettings(activity.getPreferences(0));
         boolean mavkAvailable = MavkRuntimeAssets.isBundled(activity);
-        FigmaDropdown.show(anchor, UbuntuSettingsTabs.displayLabels(mavkAvailable),
+        DropdownMenu.show(anchor, UbuntuSettingsTabs.displayLabels(mavkAvailable),
                 settings.selected(() -> mavkAvailable).ordinal(), index -> {
                     Mode requested = Mode.values()[index];
                     if (requested == settings.selected(() -> mavkAvailable)) return;

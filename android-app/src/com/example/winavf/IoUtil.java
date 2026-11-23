@@ -36,6 +36,56 @@ final class IoUtil {
         return error.getClass().getSimpleName() + ": " + error.getMessage();
     }
 
+    /** True when {@code target} really sits inside {@code root}, after resolving symlinks. */
+    static boolean isInside(File root, File target) throws IOException {
+        String base = root.getCanonicalPath() + File.separator;
+        return target.getCanonicalPath().startsWith(base);
+    }
+
+    /**
+     * Deletes a file or directory tree without following symlinks.
+     *
+     * Workspace removal used to delete only the named disk file, which left the
+     * sibling staging directories behind: {@code linux-persistent-payload} holds a
+     * 128 MiB platform prefix, an ESP backup of the same size and the boot wrapper,
+     * and {@code linux-persistent} keeps the growth journal. Android does not
+     * reclaim that space until the application data is cleared, so the workspace
+     * appeared to keep its size after deletion.
+     *
+     * Returns the number of bytes released. Missing paths are not an error.
+     */
+    static long deleteTree(File root, File target) throws IOException {
+        if (!isInside(root, target)) {
+            throw new SecurityException("Refusing to delete outside the app-private workspace: " + target);
+        }
+        return deleteTreeUnchecked(target, new java.util.HashSet<>());
+    }
+
+    private static long deleteTreeUnchecked(File target, java.util.Set<String> visited) throws IOException {
+        if (!target.exists() && !Files.isSymbolicLink(target.toPath())) return 0L;
+        File canonical = target.getCanonicalFile();
+        if (!visited.add(canonical.getPath())) return 0L;
+        long released = 0L;
+        File[] children = target.listFiles();
+        if (children != null) {
+            for (File child : children) released += deleteTreeUnchecked(child, visited);
+        }
+        long length = target.length();
+        if (Files.isSymbolicLink(target.toPath())) {
+            Files.deleteIfExists(target.toPath());
+        } else if (target.isDirectory()) {
+            String[] remaining = target.list();
+            if (remaining != null && remaining.length > 0) {
+                throw new IOException("Could not empty the workspace directory: " + remaining.length + " entries left");
+            }
+            if (!target.delete()) throw new IOException("Could not delete the workspace directory: " + target.getName());
+        } else {
+            if (!target.delete()) throw new IOException("Could not delete the workspace file: " + target.getName());
+            released += length;
+        }
+        return released;
+    }
+
     static void publishFile(File staging, File target) throws IOException {
         try {
             Files.move(staging.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING,

@@ -24,12 +24,14 @@ final class WindowsSetupRuntime {
     // Raw AVF DeathReason values verified against guest shutdown and reboot on Tab S11.
     private static final int AVF_REBOOT = 5;
     private static final int AVF_SHUTDOWN = 3;
+    private static final String POST_INSTALL_STARTS = "post_install_starts";
 
     enum Phase { VERIFYING, BOOTING, WAITING_DISPLAY, DISPLAYING, DISPLAY_UNAVAILABLE, STOPPING, STOPPED, FAILED }
-    enum Boot { PREVIEW, INSTALL, INSTALLED }
+    enum Boot { PREVIEW, READ_ONLY_SETUP, INSTALL, INSTALLED }
 
     private final Context context;
     private final Boot boot;
+    private final boolean postInstallStart;
     private volatile Phase phase = Phase.VERIFYING;
     private volatile String error = "";
     private boolean stopRequested;
@@ -39,6 +41,7 @@ final class WindowsSetupRuntime {
     private boolean stateQueryFailed;
     private volatile boolean continueInstalled;
     private volatile boolean restarting;
+    private boolean restartAfterStop;
     private final boolean rebootSuccessor;
     private volatile int deathReason = -1;
     private boolean observingDeath;
@@ -46,6 +49,7 @@ final class WindowsSetupRuntime {
     private WindowsAvfOwner avf;
     private WindowsKdUart transport;
     private Object vm;
+    private volatile Object retainedAfterStopFailure;
 
     WindowsSetupRuntime(Context context, Boot boot) {
         this(context, boot, false);
@@ -55,6 +59,7 @@ final class WindowsSetupRuntime {
         this.context = context.getApplicationContext();
         this.boot = boot;
         this.rebootSuccessor = rebootSuccessor;
+        this.postInstallStart = boot == Boot.INSTALLED && startupPreferences().getInt(POST_INSTALL_STARTS, 0) > 0;
     }
 
     static boolean available(Context context) {
@@ -71,6 +76,12 @@ final class WindowsSetupRuntime {
     boolean rebootSuccessor() { return rebootSuccessor; }
     boolean installing() { return boot == Boot.INSTALL; }
     boolean setupEnvironment() { return boot != Boot.INSTALLED; }
+    boolean postInstallStart() { return postInstallStart; }
+    boolean hasRetainedVm() { return retainedAfterStopFailure != null; }
+
+    private android.content.SharedPreferences startupPreferences() {
+        return context.getSharedPreferences("windows_startup", Context.MODE_PRIVATE);
+    }
 
     synchronized void start(Runnable ended) {
         if (started) return;
@@ -113,13 +124,18 @@ final class WindowsSetupRuntime {
             File wrapper = verifiedWrapper(directory);
             File nativeDir = new File(context.getApplicationInfo().nativeLibraryDir);
             avf = new WindowsAvfOwner(WindowsAvfOwner.rawConfig(context, wrapper, disk,
-                    4L * 1024 * 1024 * 1024, profile.matchHostCpus()));
+                    4L * 1024 * 1024 * 1024, profile.matchHostCpus(), boot == Boot.READ_ONLY_SETUP));
             try (var uart = new WindowsKdUart(nativeDir, directory)) {
                 synchronized (this) {
                     if (stopRequested) return;
                     if (guided) {
-                        WindowsSetupDisk.setInstallApproval(disk.toPath(), false);
-                        if (boot == Boot.INSTALL) WindowsSetupDisk.setInstallApproval(disk.toPath(), true);
+                        if (boot == Boot.READ_ONLY_SETUP) {
+                            // WinPE switches to guided installation when this file exists.
+                            WindowsSetupDisk.requireUnapprovedSetup(disk.toPath());
+                        } else {
+                            WindowsSetupDisk.setInstallApproval(disk.toPath(), false);
+                            if (boot == Boot.INSTALL) WindowsSetupDisk.setInstallApproval(disk.toPath(), true);
+                        }
                     }
                     transport = uart;
                     vm = uart.createVm(avf);
@@ -137,7 +153,8 @@ final class WindowsSetupRuntime {
                     phase = Phase.BOOTING;
                 }
                 watchdog.scheduleWithFixedDelay(this::checkGuest, 1, 1, TimeUnit.SECONDS);
-                watchdog.schedule(this::checkBootDeadline, WindowsKdUart.BOOT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                watchdog.schedule(this::checkBootDeadline,
+                        postInstallStart ? 600_000 : WindowsKdUart.BOOT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
                 uart.serve(() -> {
                     synchronized (this) {
                         if (!stopRequested && error.isEmpty()) phase = Phase.WAITING_DISPLAY;
@@ -170,6 +187,7 @@ final class WindowsSetupRuntime {
                 catch (Exception failure) {
                     if (error.isEmpty()) error = rootMessage(failure);
                     Log.w(TAG, "Windows Setup VM stop failed", failure);
+                    synchronized (this) { retainedAfterStopFailure = stoppingVm; }
                 }
             }
             boolean installedVerified = false;
@@ -177,6 +195,7 @@ final class WindowsSetupRuntime {
                 try {
                     var disk = WindowsSetupDisk.workspace(context);
                     WindowsSetupDisk.verifyInstalledBcd(disk, WindowsSetupLayout.inspect(disk));
+                    if (boot == Boot.INSTALL) startupPreferences().edit().putInt(POST_INSTALL_STARTS, 2).apply();
                     installedVerified = true;
                     Log.i(TAG, "Windows installed boot verified after " + (restarting ? "reboot" : "installation"));
                 } catch (IOException | LinkageError failure) {
@@ -187,7 +206,12 @@ final class WindowsSetupRuntime {
                 }
             }
             synchronized (this) {
-                continueInstalled = installedVerified && !stopRequested;
+                if (restartAfterStop && retainedAfterStopFailure == null && error.isEmpty()) {
+                    restarting = true;
+                    continueInstalled = true;
+                } else {
+                    continueInstalled = installedVerified && !stopRequested;
+                }
                 phase = error.isEmpty() ? Phase.STOPPED : Phase.FAILED;
             }
         }
@@ -241,6 +265,11 @@ final class WindowsSetupRuntime {
 
     synchronized boolean displayReady() {
         if (phase != Phase.WAITING_DISPLAY && phase != Phase.DISPLAYING) return false;
+        if (!displayed && postInstallStart) {
+            var preferences = startupPreferences();
+            int remaining = preferences.getInt(POST_INSTALL_STARTS, 0);
+            if (remaining > 0) preferences.edit().putInt(POST_INSTALL_STARTS, remaining - 1).apply();
+        }
         displayed = true;
         phase = Phase.DISPLAYING;
         return true;
@@ -257,8 +286,29 @@ final class WindowsSetupRuntime {
     }
 
     synchronized void stop() {
+        restartAfterStop = false;
+        requestStop();
+    }
+
+    synchronized void restartInstalled() {
+        if (boot != Boot.INSTALLED || phase != Phase.DISPLAYING) return;
+        restartAfterStop = true;
+        requestStop();
+    }
+
+    private void requestStop() {
         stopRequested = true;
         continueInstalled = false;
+        if (retainedAfterStopFailure != null) {
+            try {
+                if (!avf.hasExited(retainedAfterStopFailure)) avf.stop(retainedAfterStopFailure);
+                retainedAfterStopFailure = null;
+                phase = Phase.STOPPED;
+            } catch (Exception failure) {
+                Log.w(TAG, "Windows VM stop retry failed", failure);
+            }
+            return;
+        }
         if (!active()) return;
         phase = Phase.STOPPING;
         if (transport != null) transport.close();

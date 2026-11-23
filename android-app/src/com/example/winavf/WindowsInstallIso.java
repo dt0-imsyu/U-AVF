@@ -57,6 +57,7 @@ final class WindowsInstallIso {
             case 3 -> new IOException("The ISO has no ARM64 EFI boot loader.");
             case 4 -> new IOException("The ISO has no readable sources/boot.wim.");
             case 5 -> new IOException("The ISO has no readable sources/install.wim or install.esd.");
+            case 6 -> new IOException("The ISO file size is invalid: it must contain complete 2048-byte sectors.");
             default -> new IOException("Windows ISO inspection failed.");
         };
     }
@@ -98,23 +99,32 @@ final class WindowsInstallIso {
     static ParcelFileDescriptor openPayload(Context context, ParcelFileDescriptor iso, boolean boot)
             throws IOException {
         if (!available()) throw new IOException("Windows ISO reader is unavailable.");
-        long handle = openPayloadFd(iso.getFd(), boot);
-        if (handle == 0) throw new IOException("Could not open the requested image inside the ISO.");
-        HandlerThread worker = new HandlerThread("U-AVF-wim-read");
-        worker.start();
+        return openProxy(context, openPayloadFd(iso.getFd(), boot));
+    }
+
+    /** Open an installation file within the selected ISO without a temporary copy. */
+    static ParcelFileDescriptor openFile(Context context, ParcelFileDescriptor iso, String path)
+            throws IOException {
+        if (!available()) throw new IOException("Windows ISO reader is unavailable.");
+        return openProxy(context, openFileFd(iso.getFd(), path));
+    }
+
+    private static ParcelFileDescriptor openProxy(Context context, long handle) throws IOException {
+        if (handle == 0) throw new IOException("Could not open the requested file inside the ISO.");
+        HandlerThread worker = new HandlerThread("U-AVF-iso-read");
         ProxyFileDescriptorCallback callback = new ProxyFileDescriptorCallback() {
             private boolean closed;
 
             @Override public synchronized long onGetSize() throws ErrnoException {
-                if (closed) throw new ErrnoException("get WIM size", OsConstants.EBADF);
+                if (closed) throw new ErrnoException("get ISO file size", OsConstants.EBADF);
                 return payloadSize(handle);
             }
 
             @Override public synchronized int onRead(long offset, int size, byte[] data)
                     throws ErrnoException {
-                if (closed) throw new ErrnoException("read WIM", OsConstants.EBADF);
+                if (closed) throw new ErrnoException("read ISO file", OsConstants.EBADF);
                 int count = readPayload(handle, offset, size, data);
-                if (count < 0) throw new ErrnoException("read WIM", OsConstants.EIO);
+                if (count < 0) throw new ErrnoException("read ISO file", OsConstants.EIO);
                 return count;
             }
 
@@ -126,6 +136,7 @@ final class WindowsInstallIso {
             }
         };
         try {
+            worker.start();
             return context.getSystemService(StorageManager.class).openProxyFileDescriptor(
                     ParcelFileDescriptor.MODE_READ_ONLY, callback, new Handler(worker.getLooper()));
         } catch (IOException | RuntimeException error) {
@@ -135,6 +146,7 @@ final class WindowsInstallIso {
     }
 
     private static native long openPayloadFd(int fd, boolean boot);
+    private static native long openFileFd(int fd, String path);
     private static native long payloadSize(long handle);
     private static native int readPayload(long handle, long offset, int size, byte[] data);
     private static native void closePayload(long handle);

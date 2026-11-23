@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.RuntimeTransitionView;
+
 import android.app.Activity;
 import android.os.Handler;
 import android.os.SystemClock;
@@ -30,6 +32,9 @@ final class TransitionController {
 
         /** Runs when the user asks to force-stop from the overlay. */
         void forceStop(boolean forReboot);
+        void stopWindowsLaunch();
+        void stopUbuntuBoot();
+        void recoverWindows();
 
         /** Hides the overlay and returns to the mode-selection screen. */
         void dismissed();
@@ -54,6 +59,7 @@ final class TransitionController {
 
     private RuntimeTransitionView view;
     private volatile boolean destroyed;
+    private volatile boolean transitionWindows;
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
@@ -82,6 +88,14 @@ final class TransitionController {
 
     /** Shows the overlay for a new launch, replacing any previous one. */
     void begin(RuntimeTransition.Mode mode) {
+        /*
+         * The profile is refreshed on every begin, including the reboot-to-boot
+         * handoff. Otherwise a guest that rebooted while the other profile was
+         * selected keeps showing that profile's name: a later Ubuntu launch
+         * would still say "Запускаем Windows", because the reboot guard below
+         * preserves the transition state but not the identity behind it.
+         */
+        transitionWindows = host.isWindows();
         // Keep reboot evidence visible until the restarted VM produces a frame.
         if (!(mode == RuntimeTransition.Mode.BOOT
                 && transition.mode() == RuntimeTransition.Mode.REBOOT)) {
@@ -99,13 +113,19 @@ final class TransitionController {
     }
 
     private RuntimeTransitionView createView() {
-        return new RuntimeTransitionView(activity, transition, host::isWindows,
+        return new RuntimeTransitionView(activity, transition, () -> transitionWindows,
                 () -> host.forceStop(transition.operation() == RuntimeTransition.Mode.REBOOT),
                 () -> {
-                    transition.dismiss();
-                    view.setVisibility(View.GONE);
-                    host.dismissed();
-                });
+                    if (transitionWindows) host.stopWindowsLaunch();
+                    else host.stopUbuntuBoot();
+                }, () -> dismiss(host::recoverWindows),
+                () -> dismiss(host::dismissed));
+    }
+
+    private void dismiss(Runnable destination) {
+        transition.dismiss();
+        destination.run();
+        view.hide();
     }
 
     /** True while the overlay should still be on screen. */
@@ -115,7 +135,10 @@ final class TransitionController {
 
     /** Restarts the tick, used when returning to a transition that is still up. */
     void resume() {
-        activity.runOnUiThread(tick);
+        activity.runOnUiThread(() -> {
+            handler.removeCallbacks(tick);
+            tick.run();
+        });
     }
 
     /** Restarts the tick so the overlay redraws with current state. */
@@ -126,7 +149,7 @@ final class TransitionController {
     /** Hides the overlay without dismissing the transition state. */
     void hideOverlay() {
         activity.runOnUiThread(() -> {
-            if (view != null) view.setVisibility(View.GONE);
+            if (view != null) view.hide();
         });
     }
 

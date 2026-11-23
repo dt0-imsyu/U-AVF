@@ -12,32 +12,73 @@ import static com.example.winavf.WindowsKdWire.littleEndian;
 
 /** Runtime steps from the retained 26100 ARM64 eight-CPU boot. */
 final class WindowsKdSmpBootstrap {
-    private static final int PMU = 0x49fd3c, ALLOCATE_PMU = 0x49fd70;
-    private static final int CPU_ON = 0x4aaf1c, NEXT_CPU = 0x49a7c0, STARTUP_WAIT = 0x481ebc;
-    private static final int START_HANDSHAKE = 0xb36084, HANDSHAKE_DONE = 0xb360b0;
-    private static final int TIME_IPI = 0x4f895c, TIME_IPI_RETURN = 0x4f8960, START_RETURN = 0xb363bc;
+    private record Instruction(int rva, String bytes) {}
+
+    private enum Stop {
+        PMU(new Instruction(0x49fd3c, "133d0b53"), new Instruction(0x49ba5c, "133d0b53")),
+        ALLOCATE_PMU(new Instruction(0x49fd70, "dc961794"), new Instruction(0x49ba90, "90131894")),
+        CPU_ON(new Instruction(0x4aaf1c, "e0013fd6"), new Instruction(0x4a6df4, "e0013fd6")),
+        NEXT_CPU(new Instruction(0x49a7c0, "7f2303d5"), new Instruction(0x4968e0, "7f2303d5")),
+        STARTUP_WAIT(new Instruction(0x481ebc, "e003132a"), new Instruction(0x47db0c, "e003132a")),
+        START_HANDSHAKE(new Instruction(0xb36084, "1f0c0071"), new Instruction(0xb54140, "1f0c0071")),
+        HANDSHAKE_DONE(new Instruction(0xb360b0, "e00313aa"), new Instruction(0xb5416c, "e00313aa")),
+        TIME_IPI(new Instruction(0x4f895c, "59f5f597"), new Instruction(0x4f3ea4, "f300f697")),
+        TIME_IPI_RETURN(new Instruction(0x4f8960, "20008052"), new Instruction(0x4f3ea8, "20008052")),
+        START_RETURN(new Instruction(0xb363bc, "c0035fd6"), new Instruction(0xb54484, "c0035fd6"));
+
+        final Instruction winpe6584;
+        final Instruction winpe9457;
+
+        Stop(Instruction winpe6584, Instruction winpe9457) {
+            this.winpe6584 = winpe6584;
+            this.winpe9457 = winpe9457;
+        }
+    }
+
+    private record KernelSymbols(int numberProcessors, int barrierWait, int psciHvcHandler,
+                                 int calibrateTime, int ipiCheck, Instruction ipiSetup,
+                                 Instruction gicRegistration, int interruptController, int gic,
+                                 int breakpointTable) {}
+
+    private static final KernelSymbols WINPE_6584 = new KernelSymbols(
+            0xe08a80, 0xe08c38, 0x49a870, 0xa982e0, 0x484d98,
+            new Instruction(0x484dd0, "e1674179284c00b002810291e0c30291"),
+            new Instruction(0x4aefbc, "28490090133505f9"),
+            0xc100e0, 0xdd2a68, 0xdbc420);
+    private static final KernelSymbols WINPE_9457 = new KernelSymbols(
+            0xe09a80, 0xe09c48, 0x496990, 0xab3b60, 0x4809e8,
+            new Instruction(0x480a20, "e1674179484c00d002810291e0c30291"),
+            new Instruction(0x4aaebc, "484900b013dd02f9"),
+            0xc10510, 0xdd35b8, 0xdbe040);
+
     private static final int PC = 264, SP = 256, PAGE = 4096;
     private static final int BRK = 0xd43e0000;
     private static final byte[] PUBLISH = HexFormat.of().parseHex(
             "307a0bd510820091307a0bd510820091307a0bd510820091307a0bd59f3f03d5df3f03d500003ed4");
     private final WindowsKdSession kd;
     private final Map<Long, Probe> probes = new HashMap<>();
+    private KernelSymbols symbols;
     private long base, physical, runtime;
     private int lastCpu;
+    private int pendingEntryMarkers;
     private ByteBuffer cpuOnContext;
     private boolean ipiReturned;
     private boolean online;
 
-    private record Probe(int handle, int rva, byte[] original) {}
+    private record Probe(int handle, Stop stop, byte[] original) {}
 
     WindowsKdSmpBootstrap(WindowsKdSession kd) { this.kd = kd; }
 
     boolean online() { return online; }
 
-    void arm(long kernelBase) throws IOException {
+    void arm(long kernelBase, WindowsKdBootProfile.Build build) throws IOException {
         base = kernelBase;
-        probe(CPU_ON, "e0013fd6");
-        probe(PMU, "133d0b53");
+        symbols = switch (build) {
+            case WINPE_6584 -> WINPE_6584;
+            case WINPE_9457 -> WINPE_9457;
+        };
+        probe(Stop.CPU_ON);
+        probe(Stop.PMU);
     }
 
     boolean handle(long pc) throws IOException {
@@ -51,13 +92,13 @@ final class WindowsKdSmpBootstrap {
             return true;
         }
         remove(pc, probe);
-        switch (probe.rva()) {
+        switch (probe.stop()) {
             case PMU -> {
                 long midr = x(registers, 10);
                 int counters = (int) ((x(registers, 8) >>> 11) & 31);
                 require(x(registers, 20) == 0 && ((midr == 0x410fd821L && counters == 31)
                         || (midr == 0x410fd811L && counters == 20)), "BSP PMU");
-                if (counters == 31) probe(ALLOCATE_PMU, "dc961794");
+                if (counters == 31) probe(Stop.ALLOCATE_PMU);
             }
             case ALLOCATE_PMU -> {
                 require(x(registers, 20) == 0 && x(registers, 0) == 31
@@ -67,30 +108,37 @@ final class WindowsKdSmpBootstrap {
             case CPU_ON -> redirectCpuOn(registers);
             case NEXT_CPU -> {
                 require(x(registers, 0) == lastCpu + 1 && lastCpu < 7, "next CPU_ON");
-                probe(CPU_ON, "e0013fd6");
+                probe(Stop.CPU_ON);
             }
             case STARTUP_WAIT -> {
-                require(x(registers, 19) == 4
-                        && readLong(runtime + lastCpu * PAGE + 48) == 1, "secondary CPU reached Windows");
-                if (lastCpu == 7) probe(START_HANDSHAKE, "1f0c0071");
+                require(x(registers, 19) == 4, "Windows startup wait for CPU " + lastCpu);
+                long marker = readLong(runtime + lastCpu * PAGE + 48);
+                require(marker == 0 || marker == 1, "invalid entry marker for CPU " + lastCpu);
+                // The native startup flag can become visible before our marker.
+                // Recheck a zero after the final handshake, before reporting SMP online.
+                if (marker == 0) pendingEntryMarkers |= 1 << lastCpu;
+                if (lastCpu == 7) probe(Stop.START_HANDSHAKE);
             }
             case START_HANDSHAKE -> {
                 require(lastCpu == 7 && x(registers, 0) == 4, "all secondary CPUs started");
-                probe(HANDSHAKE_DONE, "e00313aa");
+                probe(Stop.HANDSHAKE_DONE);
             }
             case HANDSHAKE_DONE -> {
-                probe(TIME_IPI, "59f5f597");
-                probe(START_RETURN, "c0035fd6");
+                probe(Stop.TIME_IPI);
+                probe(Stop.START_RETURN);
             }
             case TIME_IPI -> configureIpi(registers);
             case TIME_IPI_RETURN -> ipiReturned = true;
             case START_RETURN -> {
-                require(ipiReturned && readInt(base + 0xe08a80) == 8
-                        && readInt(base + 0xe08c38) == 0, "eight Windows processors online");
+                require(ipiReturned && readInt(base + symbols.numberProcessors()) == 8
+                        && readInt(base + symbols.barrierWait()) == 0, "eight Windows processors online");
+                for (int pending = pendingEntryMarkers; pending != 0; pending &= pending - 1) {
+                    int cpu = Integer.numberOfTrailingZeros(pending);
+                    require(readLong(runtime + cpu * PAGE + 48) == 1, "entry marker for CPU " + cpu);
+                }
                 online = true;
                 android.util.Log.i("UAVF-Windows-Setup", "WINDOWS_SMP_ONLINE=8");
             }
-            default -> throw new IOException("Unknown Windows SMP probe");
         }
         return true;
     }
@@ -115,7 +163,7 @@ final class WindowsKdSmpBootstrap {
         long entry = x(registers, 2), context = x(registers, 3);
         int cpu = lastCpu + 1;
         require(runtime != 0 && cpu <= 7 && cpuOnContext == null && x(registers, 0) == 0xc4000003L
-                && x(registers, 1) == cpu && x(registers, 15) == base + 0x49a870
+                && x(registers, 1) == cpu && x(registers, 15) == base + symbols.psciHvcHandler()
                 && entry >= 0x80000000L && entry < 0x180000000L && (entry & 3) == 0
                 && (cpu == 1 ? context == 0x8000c000L : context >= 0x80000000L && context < 0x180000000L),
                 "CPU_ON operands");
@@ -131,8 +179,8 @@ final class WindowsKdSmpBootstrap {
         registers.putLong(24, physical + offset).putLong(32, 0);
         cpuOnContext = littleEndian(registers.array().clone());
         lastCpu = cpu;
-        if (cpu < 7) probe(NEXT_CPU, "7f2303d5");
-        probe(STARTUP_WAIT, "e003132a");
+        if (cpu < 7) probe(Stop.NEXT_CPU);
+        probe(Stop.STARTUP_WAIT);
         kd.restoreContext(registers.putLong(136, runtime + offset).putLong(PC, runtime + 512));
     }
 
@@ -147,12 +195,12 @@ final class WindowsKdSmpBootstrap {
     }
 
     private void configureIpi(ByteBuffer registers) throws IOException {
-        require(lastCpu == 7 && x(registers, 0) == base + 0xa982e0
+        require(lastCpu == 7 && x(registers, 0) == base + symbols.calibrateTime()
                 && x(registers, 1) == registers.getLong(SP), "native time IPI");
-        expect(base + 0x484d98, "09f540b9c9002836");
-        expect(base + 0x484dd0, "e1674179284c00b002810291e0c30291");
-        expect(base + 0x4aefbc, "28490090133505f9");
-        long controller = readLong(base + 0xc100e0), gic = readLong(base + 0xdd2a68);
+        expect(base + symbols.ipiCheck(), "09f540b9c9002836");
+        expect(base + symbols.ipiSetup().rva(), symbols.ipiSetup().bytes());
+        expect(base + symbols.gicRegistration().rva(), symbols.gicRegistration().bytes());
+        long controller = readLong(base + symbols.interruptController()), gic = readLong(base + symbols.gic());
         require(kernelAddress(controller, 8) && kernelAddress(gic, 8)
                 && readInt(controller + 0xf4) == 0x82b, "GIC capability");
         var metadata = littleEndian(kd.read(gic, 0x90 + 8 * 0x48));
@@ -168,21 +216,22 @@ final class WindowsKdSmpBootstrap {
         }
         require(affinities == 255 && redistributors == 255, "unique GIC CPU mappings");
         writeChecked(controller + 0xf4, littleEndian(new byte[4]).putInt(0x80b).array());
-        probe(TIME_IPI_RETURN, "20008052");
+        probe(Stop.TIME_IPI_RETURN);
     }
 
-    private void probe(int rva, String instruction) throws IOException {
-        long address = base + rva;
-        byte[] original = HexFormat.of().parseHex(instruction);
+    private void probe(Stop stop) throws IOException {
+        Instruction instruction = symbols == WINPE_9457 ? stop.winpe9457 : stop.winpe6584;
+        long address = base + instruction.rva();
+        byte[] original = HexFormat.of().parseHex(instruction.bytes());
         for (long other : probes.keySet()) require(Math.abs(other - address) >= 32, "breakpoint overlap");
-        require(Arrays.equals(kd.read(address, 4), original), "original instruction " + instruction);
-        probes.put(address, new Probe(kd.insertBreakpoint(address), rva, original));
+        require(Arrays.equals(kd.read(address, 4), original), "original instruction " + instruction.bytes());
+        probes.put(address, new Probe(kd.insertBreakpoint(address), stop, original));
     }
 
     private void remove(long pc, Probe probe) throws IOException {
         int status = kd.removeBreakpoint(probe.handle());
         require(status == 0 || (status == 0xc0000001
-                && readInt(base + 0xdbc420 + (probe.handle() - 1) * 40 + 32) == 0), "breakpoint removal");
+                && readInt(base + symbols.breakpointTable() + (probe.handle() - 1) * 40 + 32) == 0), "breakpoint removal");
         require(Arrays.equals(kd.read(pc, 4), probe.original()), "restored instruction");
     }
 

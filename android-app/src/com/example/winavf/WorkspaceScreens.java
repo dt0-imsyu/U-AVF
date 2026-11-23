@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.DashboardScreen;
+import com.example.winavf.ui.ProductDialog;
+import com.example.winavf.ui.ScreenLayout;
+import com.example.winavf.ui.StorageReviewScreen;
+import com.example.winavf.ui.UiLanguage;
+import com.example.winavf.ui.WorkspaceCreationScreen;
+import com.example.winavf.ui.WorkspaceHomeScreen;
+import com.example.winavf.ui.WorkspaceSettingsScreen;
+
 import static com.example.winavf.IoUtil.formatBytes;
 
 import android.app.Activity;
@@ -35,8 +44,10 @@ final class WorkspaceScreens {
       void pickLiveIso();
       void openUbuntuStorage();
       void refreshAppSettings();
-      String releaseVersion();
-      void showLegal(String name);
+      void refreshAppearance();
+      void about();
+      void contact();
+      void privacy();
       void show(String message);
    }
 
@@ -57,7 +68,7 @@ final class WorkspaceScreens {
       this.host = host;
    }
 
-   FigmaCanvas create(ProductScreen screen) {
+   ScreenLayout create(ProductScreen screen) {
       return switch (screen) {
          case WINDOWS_HOME -> createWindowsWorkspace();
          case LINUX_HOME -> createUbuntuWorkspace();
@@ -72,12 +83,15 @@ final class WorkspaceScreens {
    private void watchWindowsProgress(View view, WindowsSetupFlow.Progress seen) {
       activity.getWindow().getDecorView().postDelayed(() -> {
          if (!host.currentWindowsPage(view)) return;
-         if (windows.progress() != seen) host.refreshWorkspace(ProductScreen.WINDOWS_HOME);
+         if (windows.progress() != seen) {
+            host.refreshWorkspace(ProductScreen.WINDOWS_HOME);
+            windows.launchPreparedIfReady();
+         }
          else watchWindowsProgress(view, seen);
       }, 700);
    }
 
-   IntFunction<FigmaMainTabs> mainPageFactory() {
+   IntFunction<DashboardScreen> mainPageFactory() {
       File disk = storage.disk();
       boolean exists = disk.isFile();
       boolean ready = exists && preferences.getBoolean(UbuntuWorkspaceMedia.INSTALLED_READY, false);
@@ -99,19 +113,19 @@ final class WorkspaceScreens {
       };
       String launchLabel = ubuntuRunning ? "Вернуться" : ready ? "Запустить" : exists ? "Продолжить" : "Создать";
       String storageLabel = storageLabel(exists, diskSize);
-      FigmaMainTabs.Workspace windowsCard = windowsCard(windowsRunning, openWindows);
-      return tab -> new FigmaMainTabs(activity, tab, !ready && !ubuntuRunning, exists && !ready,
-            new FigmaMainTabs.Workspace(workspaceTitle(false), "Ubuntu 24.04 · " + UiLanguage.text(ubuntuStatus),
+      DashboardScreen.Workspace windowsCard = windowsCard(windowsRunning, openWindows);
+      return tab -> new DashboardScreen(activity, tab, !ready && !ubuntuRunning && windowsCard == null, exists || ubuntuRunning,
+            new DashboardScreen.Workspace(workspaceTitle(false), "Ubuntu 24.04 · " + UiLanguage.text(ubuntuStatus),
                   ubuntuStatus, UiLanguage.format("%d ГБ", host.config().ramGiB), diskSize, host.displayLabel(),
                   lastDesktopSession("last_desktop_ubuntu"), false, openUbuntu),
             windowsCard, storageLabel, launchLabel, launch, () -> host.navigate(ProductScreen.CREATE_OS), createUbuntu,
             openWindows, this::openUbuntuResources, host::openUbuntuStorage, this::showLiveSession,
+            host.vmRunning() && !host.windowsSelected() && preferences.getBoolean("linux_current_boot_temporary", false),
             () -> host.navigate(ProductScreen.DIAGNOSTICS), !preferences.getBoolean("skip_disk_validation", false),
-            this::toggleDiskValidation, () -> ProductDialog.notice(activity, "U-AVF", host.releaseVersion()),
-            () -> host.showLegal("PRIVACY.md"), this::showLicenses, index -> {
+            this::toggleDiskValidation, host::about, host::contact, host::privacy, index -> {
                UiLanguage.select(activity, index);
                host.refreshAppSettings();
-            });
+            }, host::refreshAppearance);
    }
 
    private void openWorkspaceCard(boolean windows) {
@@ -137,11 +151,12 @@ final class WorkspaceScreens {
       host.settings("Performance");
    }
 
-   private FigmaMainTabs.Workspace windowsCard(boolean running, Runnable open) {
-      if (!running && !windows.diskReady()) return null;
+   private DashboardScreen.Workspace windowsCard(boolean running, Runnable open) {
+      var workspace = windows.workspace();
+      if (!running && !workspace.diskExists()) return null;
       String status = running ? "Работает" : "Диск Windows сохранён";
-      return new FigmaMainTabs.Workspace(workspaceTitle(true), "Windows ARM64 · " + UiLanguage.text(status),
-            status, "—", "—", "—", lastDesktopSession("last_display_windows"), true, open);
+      return new DashboardScreen.Workspace(workspaceTitle(true), "Windows ARM64 · " + UiLanguage.text(status),
+            status, "4 ГБ", UiLanguage.text(workspace.diskLabel()), "—", lastDesktopSession("last_display_windows"), true, open);
    }
 
    private String storageLabel(boolean diskExists, String diskSize) {
@@ -161,13 +176,7 @@ final class WorkspaceScreens {
       preferences.edit().putBoolean("skip_disk_validation", !preferences.getBoolean("skip_disk_validation", false)).apply();
    }
 
-   private void showLicenses() {
-      String[] labels = {"U-AVF", "Область действия", "Apache 2.0", "Сторонние компоненты"};
-      String[] documents = {"LICENSE-UAVF.txt", "LICENSE_SCOPE.md", "LICENSE-APACHE-2.0.txt", "THIRD_PARTY_NOTICES.txt"};
-      ProductDialog.choose(activity, "Лицензии", host.releaseVersion(), labels, -1, index -> host.showLegal(documents[index]));
-   }
-
-   private FigmaCanvas createUbuntuWorkspace() {
+   private ScreenLayout createUbuntuWorkspace() {
       File disk = storage.disk();
       boolean exists = disk.isFile();
       var prefs = preferences;
@@ -177,10 +186,10 @@ final class WorkspaceScreens {
       String resources = UiLanguage.format("%d ГБ", host.config().ramGiB)
             + " · " + (exists ? formatBytes(disk.length()) : "—");
       String action = running ? "Вернуться" : ready ? "Запустить" : exists ? "Продолжить" : "Создать";
-      return new FigmaWorkspaceHome(activity, false, this.workspaceTitle(false), state, resources,
+      return new WorkspaceHomeScreen(activity, false, this.workspaceTitle(false), state, resources,
             host.displayLabel(), action, () -> this.openUbuntuWorkspace(running, exists, ready),
             host::back, () -> this.showWorkspaceActions(false),
-            tab -> host.settings(FigmaWorkspaceSettings.TABS[tab]), null);
+            tab -> host.settings(WorkspaceSettingsScreen.TABS[tab]), null);
    }
 
    private boolean ubuntuWorkspaceRunning() {
@@ -203,21 +212,21 @@ final class WorkspaceScreens {
       else host.navigate(this.isoPresent() ? ProductScreen.CREATE_STORAGE : ProductScreen.CREATE_OS);
    }
 
-   private FigmaCanvas createWindowsWorkspace() {
+   private ScreenLayout createWindowsWorkspace() {
       boolean vmRunning = host.vmRunning();
       boolean running = vmRunning && host.windowsSelected();
       var workspace = windows.workspace();
       boolean chooseIso = workspace.canChooseMedia(vmRunning) && !workspace.isoSelected();
-      var details = new FigmaWorkspaceHome.WindowsDetails(workspace.diskLabel(),
+      var details = new WorkspaceHomeScreen.WindowsDetails(workspace.diskLabel(),
             workspace.isoSelected() ? "Образ доступен" : "Не выбран",
             workspace.canChooseMedia(vmRunning) ? () -> this.chooseWindowsWorkspaceMedia(workspace.setupAvailable()) : null);
-      var canvas = new FigmaWorkspaceHome(activity, true, this.workspaceTitle(true), running ? "Работает" : workspace.status(),
+      var canvas = new WorkspaceHomeScreen(activity, true, this.workspaceTitle(true), running ? "Работает" : workspace.status(),
             "Фиксированный профиль", "—", running ? "Вернуться" : workspace.action(chooseIso),
             () -> this.openWindowsWorkspace(running, chooseIso, workspace),
             host::back, () -> this.showWorkspaceActions(true),
-            tab -> host.settings(FigmaWorkspaceSettings.TABS[tab]), details);
-      if (workspace.setupAvailable() && workspace.progress().phase() != null) {
-         canvas.widget(new FigmaProgress(activity), 112, 1370, 1312, 12);
+            tab -> host.settings(WorkspaceSettingsScreen.TABS[tab]), details);
+      if (workspace.progress().phase() != null) {
+         canvas.showPreparationProgress();
          watchWindowsProgress(canvas, workspace.progress());
       }
       return canvas;
@@ -239,16 +248,15 @@ final class WorkspaceScreens {
          return;
       }
       host.selectWindows(true);
-      if (chooseIso) host.pickWindowsIso();
-      else if (workspace.setupAvailable()) windows.open();
+      if (chooseIso || workspace.setupAvailable()) windows.open();
       else if (workspace.isoAvailable()) host.pickWindowsIso();
       else host.launchSelected();
    }
 
-   private FigmaCanvas createStorageReview(boolean review) {
+   private ScreenLayout createStorageReview(boolean review) {
       File disk=storage.disk();WorkspaceConfig config=host.config();
       boolean ready=disk.isFile() && preferences.getBoolean("ubuntu_installed_runtime_ready",false);
-      return new FigmaStorageReview(activity,review,disk.isFile()?formatBytes(disk.length()):formatBytes(PersistentUbuntuDisk.expectedDiskBytes(UbuntuIsoImport.BYTES,storage.plannedRootBytes())),config.oneCpu?"1 vCPU":"Match-host vCPU",config.ramGiB,this.isoPresent(),host.displayLabel(),
+      return new StorageReviewScreen(activity,review,disk.isFile()?formatBytes(disk.length()):formatBytes(PersistentUbuntuDisk.expectedDiskBytes(UbuntuIsoImport.BYTES,storage.plannedRootBytes())),config.oneCpu?"1 vCPU":"Match-host vCPU",config.ramGiB,this.isoPresent(),host.displayLabel(),
             disk.isFile()?ready?"Open existing workspace":"Continue existing setup":"Create & install",()-> {
                if(!review) {host.navigate(ProductScreen.CREATE_REVIEW);return;}
                if(disk.isFile()) {
@@ -261,9 +269,9 @@ final class WorkspaceScreens {
             },ubuntu.rootSizeLabel(),disk.isFile()?null:ubuntu::chooseRootSize);
    }
 
-   private FigmaCanvas createOsPicker() {
+   private ScreenLayout createOsPicker() {
       boolean exists=storage.disk().isFile();
-      return new FigmaCreateView(activity,exists,host::back,()->{
+      return new WorkspaceCreationScreen(activity,exists,windows.workspace().diskExists(),host::back,()->{
 
          host.navigate(exists?ProductScreen.LINUX_HOME:ProductScreen.CREATE_IMAGE);
       },()->{
@@ -276,13 +284,13 @@ final class WorkspaceScreens {
       });
    }
 
-   private FigmaCanvas createUbuntuMediaScreen(ProductScreen screen) {
+   private ScreenLayout createUbuntuMediaScreen(ProductScreen screen) {
       boolean hasDisk=storage.disk().isFile();
       String name=hasDisk?this.workspaceTitle(false):
             host.draftTitle().isEmpty()?UiLanguage.text("Ubuntu · Новый"):host.draftTitle();
       String resources=UiLanguage.format("%d ГБ",host.config().ramGiB)+" · "+
             (hasDisk?formatBytes(storage.disk().length()):ubuntu.rootSizeLabel());
-      return new FigmaCreateView(activity,name,resources,this.isoPresent(),hasDisk,host::back,
+      return new WorkspaceCreationScreen(activity,name,resources,this.isoPresent(),hasDisk,host::back,
             ()->ProductDialog.rename(activity,name,next->{
                if(hasDisk)preferences.edit().putString("ubuntu_workspace_title",next).apply();
                else host.setDraftTitle(next);
@@ -310,33 +318,75 @@ final class WorkspaceScreens {
          return;
       }
       boolean ready=this.isoPresent();
-      String[] media={"Выбрать ISO…","Сайт Ubuntu ↗"};
-      String[] options=ready?new String[]{"Запустить",media[0],media[1]}:media;
-      ProductDialog.choose(activity,"Временная Live-сессия","Запуск Ubuntu с ISO без установки",options,-1,index->{
+      /*
+       * Resources must stay reachable in every state. They used to be dropped
+       * whenever an ISO was already selected, because the same array served as
+       * both the media list and the full option list.
+       */
+      String[] media={"Выбрать ISO…","Скачать ISO ↗","Ресурсы"};
+      String[] options=ready?new String[]{"Запустить",media[0],media[1],media[2]}:media;
+      ProductDialog.choose(activity,"Временная Live-сессия","Ubuntu 24.04.5 Desktop ARM64 · запуск без установки",options,-1,index->{
          if(ready && index==0) {
             host.selectWindows(false);
             host.launchSelected();
          } else if(index==(ready?1:0)) {
             host.pickLiveIso();
-         } else {
+         } else if(index==(ready?2:1)) {
             ubuntu.openOfficialDownload();
+         } else {
+            showLiveResources();
          }
       });
+   }
+
+   private void showLiveResources() {
+      ProductDialog.choose(activity, "Ресурсы", "Временная Live-сессия",
+            new String[]{"Память", "Процессор"}, -1, choice -> {
+         if (choice == 0) {
+            int current = preferences.getInt("ubuntu_live_ram_gib", 4);
+            ProductDialog.choose(activity, "Память", "Временная Live-сессия",
+                  new String[]{"3 ГБ", "4 ГБ"}, current == 3 ? 0 : 1, index -> {
+                     preferences.edit().putInt("ubuntu_live_ram_gib", index + 3).apply();
+                     showLiveSession();
+                  });
+         } else {
+            ProductDialog.choose(activity, "Процессор", "Временная Live-сессия",
+                  new String[]{"Все ядра", "1 vCPU"}, preferences.getBoolean("ubuntu_live_one_cpu", false) ? 1 : 0,
+                  index -> {
+                     preferences.edit().putBoolean("ubuntu_live_one_cpu", index == 1).apply();
+                     showLiveSession();
+                  });
+         }
+      });
+   }
+
+   private boolean windowsDeletable() {
+      var workspace = windows.workspace();
+      return workspace.diskExists() || workspace.isoSelected();
    }
 
    private void showWorkspaceActions(boolean windows) {
       boolean canModify=!windows && storage.disk().isFile() && !host.vmRunning();
       String[] actions=canModify?new String[]{"Переименовать…","Параметры","Переустановить…","Удалить…"}:
             new String[]{"Переименовать…","Параметры","Диагностика"};
-      if(windows && WindowsInstallIso.available() && !host.vmRunning())
-         actions=new String[]{"Переименовать…","Параметры","Диагностика","Запустить прежний образ"};
+      if(windows && !host.vmRunning() && windowsDeletable())
+         actions=new String[]{"Переименовать…","Параметры","Диагностика","Удалить…"};
       ProductDialog.menu(activity,"Воркспейс",actions,index->{
          if(index==0)ProductDialog.rename(activity,this.workspaceTitle(windows),name->{
             preferences.edit().putString(windows?"windows_workspace_title":"ubuntu_workspace_title",name).apply();
             host.refreshWorkspace(windows?ProductScreen.WINDOWS_HOME:ProductScreen.LINUX_HOME);
          });
-         else if(index==1)host.settings("Performance");
-         else if(windows && index==3)host.launchSelected();
+         else if(index==1){
+            /*
+             * Selecting the Ubuntu workspace's settings must also select the
+             * Ubuntu profile. Otherwise the settings screen renders the Windows
+             * tabs, because MainActivity decides between them from the sticky
+             * launch_profile value.
+             */
+            if(!windows) host.selectWindows(false);
+            host.settings("Performance");
+         }
+         else if(windows && index==3)this.windows.confirmReset(false);
          else if(!canModify)host.navigate(ProductScreen.DIAGNOSTICS);
          else if(index==2)ubuntu.confirmReinstall();
          else ubuntu.confirmDelete();

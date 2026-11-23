@@ -31,7 +31,7 @@ record ProductNavigationState(ProductScreen screen, String tab, boolean wizard, 
 
     static ProductNavigationState restore(Bundle state) {
         if (state == null || !state.containsKey("product_screen")) return null;
-        return new ProductNavigationState(ProductScreen.valueOf(state.getString("product_screen")),
+        return new ProductNavigationState(decodeScreen(state.getString("product_screen")),
                 state.getString("workspace_tab", "Performance"), state.getBoolean("wizard_settings"),
                 state.getString("create_workspace_os", "ubuntu"), state.getString("draft_ubuntu_title", ""),
                 state.getBoolean("keyboard_capture_pending"), restoreHistory(state));
@@ -43,9 +43,14 @@ record ProductNavigationState(ProductScreen screen, String tab, boolean wizard, 
         if (entries == null) return history;
         for (Bundle entry : entries) {
             String screen = entry.getString("screen");
-            history.add(new Location(screen == null ? null : ProductScreen.valueOf(screen),
+            history.add(new Location(screen == null ? null : decodeScreen(screen),
                     entry.getString("tab", "Performance"), entry.getBoolean("wizard"), entry.getBoolean("drawer")));
         }
         return history;
+    }
+
+    private static ProductScreen decodeScreen(String screen) {
+        // Older 1.2 test builds stored About as a full-screen destination.
+        return "ABOUT".equals(screen) ? ProductScreen.APP_SETTINGS : ProductScreen.valueOf(screen);
     }
 }

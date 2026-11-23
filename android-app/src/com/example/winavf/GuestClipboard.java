@@ -3,6 +3,8 @@
 // See LICENSE-UAVF.txt and LICENSE_SCOPE.md; earlier/third-party rights preserved.
 package com.example.winavf;
 
+import com.example.winavf.input.ClipboardWire;
+
 import android.app.Activity;
 import android.content.*;
 import android.os.*;

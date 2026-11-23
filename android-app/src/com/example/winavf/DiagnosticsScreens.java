@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-UAVF-1.0
 package com.example.winavf;
 
+import com.example.winavf.ui.DiagnosticsScreen;
+import com.example.winavf.ui.UiLanguage;
+
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -51,15 +54,15 @@ final class DiagnosticsScreens {
         this.host = host;
     }
 
-    FigmaDiagnostics create(ProductScreen screen) {
+    DiagnosticsScreen create(ProductScreen screen) {
         host.observeRuntime();
         return switch (screen) {
-            case DIAGNOSTICS -> new FigmaDiagnostics(activity, deviceStatus(), guestStatus(), host.frameVisible(),
+            case DIAGNOSTICS -> new DiagnosticsScreen(activity, deviceStatus(), guestStatus(), host.frameVisible(),
                     host::back, host::checkCompatibility, () -> host.navigate(ProductScreen.DIAGNOSTIC_RUNS),
                     () -> host.navigate(ProductScreen.DIAGNOSTIC_LOG), this::requestExport, host::desktop);
-            case DIAGNOSTIC_RUNS -> new FigmaDiagnostics(activity, diagnostics.compatibilitySearch(),
+            case DIAGNOSTIC_RUNS -> new DiagnosticsScreen(activity, diagnostics.compatibilitySearch(),
                     host::back, this::copy, this::copySummary, this::requestExport);
-            case DIAGNOSTIC_LOG -> new FigmaDiagnostics(activity, diagnostics.entries(),
+            case DIAGNOSTIC_LOG -> new DiagnosticsScreen(activity, diagnostics.entries(),
                     host::back, this::copy, this::copySummary, this::requestExport);
             default -> throw new IllegalArgumentException("Unknown diagnostic screen " + screen);
         };

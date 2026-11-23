@@ -27,7 +27,7 @@ final class WindowsAvfOwner {
     private Binder lifecycleCallback;
 
     static Object rawConfig(Context context, File wrapper, File disk, long memoryBytes,
-                            boolean matchHostCpus) throws ReflectiveOperationException {
+                            boolean matchHostCpus, boolean readOnly) throws ReflectiveOperationException {
         Class<?> custom = Class.forName("android.system.virtualmachine.VirtualMachineCustomImageConfig");
         Object customBuilder = Class.forName(custom.getName() + "$Builder").getConstructor().newInstance();
         set(customBuilder, "setName", String.class, "VmRun");
@@ -36,8 +36,9 @@ final class WindowsAvfOwner {
         set(customBuilder, "useNetwork", boolean.class, false);
         set(customBuilder, "useAutoMemoryBalloon", boolean.class, true);
         Class<?> diskType = Class.forName(custom.getName() + "$Disk");
-        Object writableDisk = diskType.getMethod("RWDisk", String.class).invoke(null, disk.getAbsolutePath());
-        set(customBuilder, "addDisk", diskType, writableDisk);
+        Object guestDisk = diskType.getMethod(readOnly ? "RODisk" : "RWDisk", String.class)
+                .invoke(null, disk.getAbsolutePath());
+        set(customBuilder, "addDisk", diskType, guestDisk);
         Object image = customBuilder.getClass().getMethod("build").invoke(customBuilder);
 
         Class<?> config = Class.forName("android.system.virtualmachine.VirtualMachineConfig");

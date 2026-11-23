@@ -13,11 +13,13 @@ public final class RuntimeTransition {
     private Mode operation=Mode.NONE;
     private long started,lastEvent;
     private int generation;
+    private boolean windowsPostInstall;
     private String detail="";
     private final LinkedHashMap<String,String> events=new LinkedHashMap<>();
     private final StringBuilder tail=new StringBuilder();
     public synchronized int begin(Mode next,long now) {
         mode=operation=next; started=lastEvent=now; generation++; events.clear(); tail.setLength(0); detail="";
+        windowsPostInstall=false;
         event(switch(next) {
             case BOOT -> "Start requested";
             case DISPLAY_RECONNECT -> "Display reconnect requested";
@@ -83,7 +85,15 @@ public final class RuntimeTransition {
     public synchronized void dismiss() { mode=Mode.NONE; }
     public synchronized void keepWaiting(long now) { lastEvent=now; }
     public synchronized long elapsed(long now) { return Math.max(0,now-started)/1000; }
-    public synchronized boolean waiting(long now) { return mode!=Mode.NONE && mode!=Mode.COMPLETE && mode!=Mode.ERROR && now-started>=60000 && now-lastEvent>=30000; }
+    public synchronized void setWindowsPostInstall(boolean postInstall) { windowsPostInstall=postInstall; }
+    public synchronized boolean windowsPostInstall() { return windowsPostInstall; }
+    public synchronized boolean waiting(long now) { return waiting(now,false); }
+    public synchronized boolean waiting(long now,boolean windows) {
+        boolean windowsStartup=windows && (operation==Mode.BOOT || operation==Mode.REBOOT);
+        long minimum=windowsStartup?(windowsPostInstall?300_000:120_000):60_000;
+        return mode!=Mode.NONE && mode!=Mode.COMPLETE && mode!=Mode.ERROR
+                && now-started>=minimum && now-lastEvent>=30_000;
+    }
     public synchronized String detail() { return detail; }
     public synchronized Map<String,String> events() { return new LinkedHashMap<>(events); }
 }

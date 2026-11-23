@@ -108,8 +108,8 @@ final class WindowsKdSession implements WindowsKdBootProfile.StoppedMemory {
             }
             if (!patched && kernelStop) {
                 long base = verifyKernelStop(state, packet.body());
-                WindowsKdBootProfile.apply(this, base, pc);
-                if (smp != null) smp.arm(base);
+                WindowsKdBootProfile.Build build = WindowsKdBootProfile.apply(this, base, pc);
+                if (smp != null) smp.arm(base, build);
                 resume();
                 patched = true;
                 kernelResumed.run();

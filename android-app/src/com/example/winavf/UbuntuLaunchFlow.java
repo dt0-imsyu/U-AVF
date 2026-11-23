@@ -28,6 +28,7 @@ final class UbuntuLaunchFlow {
         void showBootStatus(String message);
         void updateBootText(String message);
         void showLiveFailure();
+        void bootCancelled();
         void showHandoffFailure(String message);
         Object launch(Object configuration, String consoleLog) throws Exception;
         void attachDisplay(Object vm);
@@ -99,6 +100,7 @@ final class UbuntuLaunchFlow {
         try {
             startPreparedWorkspace(plan);
         } catch (Exception failure) {
+            if (finishCancelledBoot()) return;
             if (plan.installing() || plan.firstBoot()) lifecycle.install(VmLifecycle.Install.FAILED);
             failBoot("Ubuntu could not start: ", failure);
         }
@@ -108,7 +110,7 @@ final class UbuntuLaunchFlow {
         var prepared = workspace.prepare(plan, host.running());
         int refreshHz = requestedRefreshHz();
         var media = prepared.media();
-        Object configuration = configuration(media.kernel(), media.disk(), false, true, prepared.mavk(), refreshHz);
+        Object configuration = configuration(media.kernel(), media.disk(), false, true, prepared.mavk(), refreshHz, false);
         recordDisplayBoot(prepared.installed(), false, true, prepared.mavk(), refreshHz);
         if (prepared.handoff()) workspace.markHandoffPending();
         guestRevision = 0;
@@ -134,6 +136,7 @@ final class UbuntuLaunchFlow {
         try {
             startPreparedLive(profile, useProductDefaults);
         } catch (Exception failure) {
+            if (finishCancelledBoot()) return;
             String reason = setBootFailure(failure);
             activity.runOnUiThread(host::showLiveFailure);
             host.show("Ubuntu Live could not start: " + reason);
@@ -148,7 +151,7 @@ final class UbuntuLaunchFlow {
         int refreshHz = requestedRefreshHz();
         boolean mavk = prepared.mavk() != null;
         Object configuration = configuration(prepared.kernel(), prepared.disk(),
-                profile.disableUdmabuf, profile.hostVirgl, mavk, refreshHz);
+                profile.disableUdmabuf, profile.hostVirgl, mavk, refreshHz, true);
         prepared.invalidateReadyMarker();
         recordDisplayBoot(false, true, profile.supportsEncodedDisplay(), mavk, refreshHz);
         Object vm = host.launch(configuration, "frame-bridge-test-serial.log");
@@ -159,9 +162,13 @@ final class UbuntuLaunchFlow {
     }
 
     private Object configuration(File kernel, File disk, boolean disableUdmabuf,
-                                 boolean hostVirgl, boolean mavk, int refreshHz) throws Exception {
-        var resources = new WorkspaceConfig(preferences.getInt("linux_ram_gib", 4),
-                preferences.getBoolean("linux_one_cpu", false), displaySettings.resolution(Mode.FALLBACK));
+                                 boolean hostVirgl, boolean mavk, int refreshHz, boolean temporary) throws Exception {
+        int requestedRam = preferences.getInt("linux_ram_gib", 4);
+        // Live runs share Android's memory with the ISO filesystem cache.
+        int effectiveRam = temporary ? preferences.getInt("ubuntu_live_ram_gib", 4) : requestedRam;
+        var resources = new WorkspaceConfig(effectiveRam,
+                preferences.getBoolean(temporary ? "ubuntu_live_one_cpu" : "linux_one_cpu", false),
+                displaySettings.resolution(Mode.FALLBACK));
         var viewport = resources;
         if (mavk || displaySettings.encodedEnabled() && displaySettings.hasResolution(Mode.H264)) {
             viewport = new WorkspaceConfig(resources.ramGiB, resources.oneCpu,
@@ -193,6 +200,16 @@ final class UbuntuLaunchFlow {
     }
 
     private void failBoot(String prefix, Exception failure) { host.show(prefix + setBootFailure(failure)); }
+
+    private boolean finishCancelledBoot() {
+        synchronized (lifecycle) {
+            if (lifecycle.state() != VmLifecycle.State.STOPPING || lifecycle.owner() != null) return false;
+            lifecycle.stopped(null, "Launch cancelled");
+            lifecycle.install(VmLifecycle.Install.NONE);
+        }
+        activity.runOnUiThread(host::bootCancelled);
+        return true;
+    }
 
     private String setBootFailure(Exception failure) {
         String reason = IoUtil.rootMessage(failure);

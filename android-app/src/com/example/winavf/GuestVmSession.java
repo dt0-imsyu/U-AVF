@@ -3,6 +3,8 @@
 // No third-party or previously granted rights are withdrawn.
 package com.example.winavf;
 
+import com.example.winavf.ui.ProductDialog;
+
 import static com.example.winavf.IoUtil.rootMessage;
 
 import android.app.Activity;
@@ -195,6 +197,14 @@ final class GuestVmSession {
             });
    }
 
+   void stopBoot() {
+      rebootRequested = false;
+      userRequestedVmStop = true;
+      new Thread(() -> {
+         if (!lifecycle.cancelUnattachedStart()) forceStopSelectedProfile();
+      }, "U-AVF-cancel-boot").start();
+   }
+
    private void forceStopSelectedProfile() {
       WindowsSetupRuntime setup = VmRuntimeService.windowsSetup();
       if (setup != null && setup.active()) {
@@ -227,19 +237,24 @@ final class GuestVmSession {
 
    Object launchUbuntuVm(Object config, String consoleLog) throws Exception {
       Object vm = AvfGuest.replaceStopped(activity, AvfGuest.UBUNTU_VM, config);
-      this.userRequestedVmStop = false;
-      this.attachCallback(vm);
-      this.attachUbuntuConsole(vm,consoleLog);
-      this.vmMayBeRunning = true;
-      this.ubuntuFrameSession = true;
-      try {
-         AvfGuest.run(vm);
-      } catch (Exception failure) {
-         this.vmMayBeRunning = false;
-         this.ubuntuFrameSession = false;
-         throw failure;
+      synchronized (lifecycle) {
+         if (lifecycle.state() == VmLifecycle.State.STOPPING) {
+            throw new java.util.concurrent.CancellationException("Ubuntu launch cancelled");
+         }
+         this.userRequestedVmStop = false;
+         this.attachCallback(vm);
+         this.attachUbuntuConsole(vm,consoleLog);
+         this.vmMayBeRunning = true;
+         this.ubuntuFrameSession = true;
+         try {
+            AvfGuest.run(vm);
+         } catch (Exception failure) {
+            this.vmMayBeRunning = false;
+            this.ubuntuFrameSession = false;
+            throw failure;
+         }
+         return vm;
       }
-      return vm;
    }
 
    void attachCallback(Object vm) throws Exception {
@@ -264,7 +279,8 @@ final class GuestVmSession {
       this.transition.event("VM stopped", evidence, SystemClock.elapsedRealtime());
       Log.i("U-AVF-lifecycle", "Stopped: " + reason);
       host.disconnectGuestControls("Disconnected: " + reason);
-      boolean restart = this.rebootRequested || "STOP_REASON_REBOOT".equals(reason);
+      boolean restart = this.rebootRequested
+            || (!this.userRequestedVmStop && "STOP_REASON_REBOOT".equals(reason));
       if (restart && this.transition.mode() != RuntimeTransition.Mode.REBOOT) {
          host.beginRuntimeTransition(RuntimeTransition.Mode.REBOOT);
          this.transition.event("VM stopped", evidence, SystemClock.elapsedRealtime());
