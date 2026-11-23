@@ -1,4 +1,4 @@
-# U-AVF 1.2
+# U-AVF 1.2 - Your own VM's on android.
 
 [English](#english) · [Русский](#русский) · [Releases](https://github.com/dt0-imsyu/U-AVF/releases)
 
