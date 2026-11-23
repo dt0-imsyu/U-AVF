@@ -1,14 +1,15 @@
-U-AVF license index — updated locally 2026-10-04
+U-AVF licenses
 
-This repository has multiple licenses, not a blanket proprietary license.
+Different parts of U-AVF are released under different licenses. This file explains where to find the applicable terms; it is not a license grant.
 
-1. Only original files explicitly listed in LICENSE_SCOPE.md are covered by
-   LICENSE-UAVF.txt (U-AVF Source-Available License 1.0).
-2. Previously Apache-2.0-licensed U-AVF material and other first-party files not
-   expressly listed retain Apache-2.0; see LICENSE-APACHE-2.0.txt. Earlier grants
-   are not revoked. An unlisted file with its own license retains that license.
-3. Third-party material retains its own licenses, regardless of location.
-   See docs/release-preparation/THIRD_PARTY_COMPLIANCE.md and bundled notices.
-4. Firmware, guest libraries, fonts and the Ubuntu ISO are NOT covered as a
-   proprietary aggregate. Copyleft/source obligations remain applicable.
-5. This index does not replace the component licenses or their notice/source obligations.
+1. **Original U-AVF code covered by the U-AVF Source-Available License 1.0:** See `LICENSE-UAVF.txt`. Its terms apply only to the original material explicitly listed in `LICENSE_SCOPE.md`. Simply appearing in this repository, an APK or a release archive does not put a file under that license.
+
+2. **Earlier Apache-2.0 code:** Material previously released under Apache-2.0 remains under that license (`LICENSE-APACHE-2.0.txt`). The new U-AVF terms do not revoke or limit earlier grants. Existing license headers remain in effect.
+
+3. **Third-party components:** Each component retains its own license, whether included as source, linked into a library or bundled in the APK. The APK includes the U-AVF license texts in `assets/legal/` and a combined `assets/legal/THIRD_PARTY_NOTICES.txt`. Individual notice files are in `android-app/assets/legal-notices/`. For component details and unresolved release requirements, see `docs/release-preparation/THIRD_PARTY_COMPLIANCE.md`.
+
+4. **Guest software and platform images:** Firmware, guest operating systems and userland, fonts, codecs and installation media are separate works or collections of works. Their own license, notice and source-distribution requirements still apply. This index does not satisfy those requirements.
+
+5. **Other rights:** The U-AVF Source-Available License does not grant rights to third-party trademarks, guest operating systems or redistribution of installation media, nor does it add patent rights. Rights granted separately under other applicable licenses remain in effect.
+
+6. **If terms conflict:** This index does not replace any component's license or mandatory legal obligations. Applicable component licenses and mandatory legal rights take precedence over conflicting U-AVF terms.

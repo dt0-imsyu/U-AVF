@@ -1,5 +1,106 @@
 # U-AVF 1.2 checkpoint
 
+## Windows 26H2 release target
+
+The English ARM64 ISO on Tab S11 has SHA-256
+`8992F2D2CFD2FA647E579E9EB31FC21F34DA8333C29B6170FDE17D2ED6623E9C`,
+matching the English download listed by Microsoft for Windows 11 26H2.
+Its WinPE kernel is `DB0C8B367C1927EB4D39D922CB54DA4621E9B3C241E2655D33C5ECD46719AA13`.
+The PE export table puts `DbgLoadImageSymbols` at `0x2f7b50`. A unique raw
+24-byte context from the corresponding 25H2 entry instead matches `0x498420`.
+That mismatch demonstrates that byte uniqueness alone cannot identify a safe
+patch location across servicing builds. The timer and cache-table instruction
+matches found by this scan are candidates. They need semantic validation,
+and the PMU helper targets and secondary-CPU bootstrap need separate checks.
+
+The kernel's CodeView record identifies `ntkrnlmp.pdb`
+`7A9F162A39E89C67CD02CF2126D51A651`. The matching Microsoft symbols identify
+`HalpPciAccessMmConfigSpace` at `0x497b78`, `HalpGitAcknowledgeInterrupt` at
+`0x214920`, `KiSynchronousException` at `0x2b69a0`, and `KiEmulatedReadDword`
+at `0x62de20`. The eight-vCPU startup path also changes: for example,
+`KeStartAllProcessors` moves to `0xb53e90` and `KeNumberProcessors` to
+`0xe09a80`. Function-relative offsets and register assumptions are still
+subject to verification before these locations can be used to boot a guest.
+
+The 26H2 image contains live instructions at all three 25H2 trampoline
+locations (`0x665b00`, `0x665b20`, `0x665c40`). Its PCI device and bus
+shift bytes are at `0xc03c38` and `0xc03c39`, with initial values 15 and
+20. In the PCI access routine, the bounds check and the page-relative
+load start at `0x497b9c` and `0x497bbc`. The timer branch at `0x214998`
+still targets the corresponding instruction at offset `0x20` in its
+routine.
+
+Disassembly puts the startup handshake probes in `KeStartAllProcessors`
+at `0xb54140` (compare the startup result), `0xb5416c` (load the
+callback argument), and `0xb54484` (return). Adding the old offsets to
+the new symbol would instead probe a call, a conditional branch, and an
+epilogue register restore. These results are static evidence. Enabling
+this ISO requires verified executable space for the relocated trampolines,
+validation of the PMU and GIC runtime state, and an eight-vCPU WinPE boot
+on Tab S11.
+
+An offline relocation check found file-backed zero ranges in executable
+`.text` at `0x62e760`, `0x62e780` and `0x62e800` large enough for the
+timer, PCI and PMU trampolines respectively. Their relocated branches and
+the PCI page-relative address encode within ARM64 immediate bounds. This
+does not establish that the ranges remain available in the loaded kernel
+or that the 26H2 PMU trap context matches the 25H2 layout.
+
+The Java KD runtime now selects both the kernel patches and the SMP
+breakpoints from the same kernel identity. The 26H2 candidate matched
+28 original byte ranges in the extracted kernel, including the empty
+trampoline ranges and the SMP instruction checks. Java compiled and
+18 local tests passed (5 skipped). The ISO import gate still limits new
+workspaces to the verified 25H2 profile pending the 26H2 hardware test.
+
+QA `1.2-anyiso.5` upgraded the isolated package in place on Tab S11 and
+booted the previously prepared English 26H2 disk. KD reported
+`WINDOWS_SMP_ONLINE=8`, and the guest displayed Windows Setup. The stock
+manual Setup opened its media-driver prompt. The automatic installation
+route was unavailable because Android reported 15,316,052 KiB free
+against a 15 GiB requirement. Automatic installation and the first
+installed boot remain unverified.
+
+## Read-only Windows ISO regression on Tab S11, 2026-11-22
+
+The ARM64 WIM library was run against `sources/boot.wim` from both ISOs on
+the tablet. The Russian 25H2 ISO (`26200.6584`) returned verdict `1` (supported
+WinPE build). The English `26300.9457` ISO returned verdict `2` (ARM64 Setup
+without a matching boot profile). The scanner identified both files as Setup
+media independently of language. This was a native library test. It did not
+run the Android picker, prepare a workspace disk, or start WinPE.
+
+## RC16 update on Tab S11, 2026-11-21
+
+The installed RC15 (version code 45) was used as the payload base. RC16
+(code 46, SHA-256 `7A0F09C165D11D48F07F322CB5EE4F542FC2BACB01861EEEE2EC4DA2F869F024`)
+installed over RC15 with the same package and signing certificate. All 47
+guest asset and library entries matched in size and CRC. Installer profile
+and Windows JNI/UDF checks passed at build time.
+
+The existing Ubuntu workspace still showed its 36 GB disk. On the tablet,
+the settings menu switched through Russian, Spanish, German, Simplified
+Chinese, Japanese and English. English was restored. Diagnostics and its
+journal opened, the export action was visible, and search showed the
+expected empty result for a nonexistent event. This check did not repeat
+VM installation, AVF telemetry upload, or desktop performance measurement.
+
+The subsequent RC16 on-device compatibility check returned `COMPATIBLE`.
+It ran a disposable VM with sharing disabled. VM creation, kernel boot,
+guest memory (4,084,658,176 bytes observed), disk write/readback and vsock
+all passed. The application saved the full English report through Android's
+document picker. The exported file was read back and contained the new
+compatibility result and its start/end events (15:35:43–15:36:18 UTC).
+
+### Firestore verification
+
+On 2026-11-21, the active default database rules were read back from the
+Firebase Rules API and matched `backend/firebase/firestore.rules`. The
+active release was updated at 2026-11-15 15:08:41 UTC and includes the
+direct manufacturer/model path. The local Auth and Firestore emulator
+suite passed for grouped create, consent, deduplication, receipts and
+legacy compatibility. This verification made no production writes.
+
 ## Mavk release checks
 
 - Installed GNOME on Tab S11 remains on the tested logical-upload encoder
@@ -208,8 +309,9 @@ SHA-256 `967CFFD382A3CE675AA599A0D01751A49C65A52157CBE6DB53389DD404FCD9CA`.
 The build verified all 138 unchanged non-DEX entries and replaced the
 privacy notice. R6 installed in place on Tab S11.
 
-The app requests permission before each check. Choosing “Continue without
-sharing” starts the same local test. The result screen uses a green check,
+The R6 app requested permission before each check. Choosing “Continue without
+sharing” started the same local test. Current builds ask on first run and use
+the saved sharing switch for later checks. The result screen uses a green check,
 a muted red cross or a neutral mark, with a text status for each stage.
 The test on the signed R6 used the local-only option and all nine stages
 passed. The associated screenshots and English report are in the R6 directory.
@@ -225,8 +327,9 @@ ADB forwarding were removed from the tablet afterward.
 The v2 client and rules group results by manufacturer, model and configuration.
 One atomic commit reserves a per-account slot and creates the report and its
 receipt. Emulator tests passed for v2, repeat rejection, consent enforcement
-and the v1 write path. Existing Firebase data were left in place. The
-production CLI could not authenticate, so the v2 rules have not been deployed.
+and the v1 write path. Production deployment was initially blocked by CLI
+authentication, then completed on 2026-11-15. The direct model layout and the
+previous routes are both present in the verified active rules.
 See `backend/firebase/README.md` for the local validation command and schema.
 
 ### Ubuntu installer GNOME graphics candidate
@@ -849,3 +952,40 @@ follow that test.
   passed. The synthetic documents and account were removed. The previous
   rules release is saved in `D:/UAVF-builds/uavf12-firestore-live-20261115/rules-before.json`.
   WDDM remains paused.
+
+## Windows from one ISO and clean source check
+
+- The Windows wizard takes the supported Windows 11 ARM64 25H2 ru-RU ISO
+  (26200.6584). It stages the guest UEFI, WinPE additions and Setup files on a
+  new workspace disk. The ISO is opened read-only.
+- Tab S11, isolated QA version 1.2-iso-qa.3. The wizard selected the ISO in
+  Android, prepared the disk, started WinPE at 1920×1200 with eight vCPUs and
+  applied the Windows image after user confirmation and verified installed
+  boot after WinPE shut down. The first installed boot reached
+  `WINDOWS_SMP_ONLINE=8`. After the next guest reboot the installed boot
+  files verified again, but the Android owner stopped at the secondary-vCPU
+  check. The saved KD capture shows native startup-wait result 4 for CPU 6
+  and a zero word in its U-AVF entry marker. The earlier CPUs passed the
+  same check. A prior instrumented boot also observed a zero marker after
+  native success that became one by the final handshake. The runtime now
+  retries zero markers at the end of the eight-vCPU handshake, while requiring
+  native success at each startup wait. A host-side simulation passed for a
+  delayed marker, a missing marker and a failed native wait. One subsequent
+  manual boot on the same isolated disk with QA.5 logged `WINDOWS_SMP_ONLINE=8`
+  and delivered rendered H.264 callbacks at 1920×1200. The log does not record
+  whether a marker was deferred in that run. Cancel in the stop confirmation
+  left the boot running. The main package and disk remain in place.
+- Main APK 1.2-rc.17 (version code 50) passed signature, alignment, JNI and
+  platform profile checks. It was built locally and has not been installed.
+- A separate source snapshot excluded ignored files and build outputs. The
+  Java suite reported 18 passes and five fixture-dependent skips. All four
+  Windows native libraries matched the APK byte for byte. The WinPE ZIP
+  builder produced identical output on two runs, and its entries matched
+  the device-tested bundle. The APK build still requires a compatible
+  platform base and the inputs described in `android-app/README.md`.
+- The release build also completed from a clean copy of the Git-eligible
+  working-tree files, with the platform APK, native libraries and WinPE ZIP
+  supplied explicitly. Main APK 1.2-rc.18 (version code 51) passed signature,
+  alignment, platform profile, JNI and WinPE bundle checks. It has not been
+  installed. SHA-256:
+  `9A7262832099D589F682B254843FC3DDF83B67F0E80AE9D969EBFED29C3161F0`.

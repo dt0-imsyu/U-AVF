@@ -1,5 +1,15 @@
 # Publication gate: HOLD
 
+## U-AVF 1.2
+
+- [x] Build signed rc.18 from a clean source snapshot with explicit platform dependencies.
+- [x] Verify the Ubuntu installer profiles, Windows JNI symbols, and WinPE bundle in the build.
+- [ ] Resolve distribution terms for the OpenH264 DLL bundled in WinPE. [Component record](THIRD_PARTY_COMPLIANCE.md#windows-setup-runtime)
+- [ ] Verify the exact VirtIO distribution package, remaining corresponding sources, and artwork provenance. [Third-party checks](THIRD_PARTY_COMPLIANCE.md)
+- [ ] Finish device acceptance for the single-ISO Windows workflow and the Ubuntu installer choices. [Acceptance record](../UAVF_1_2_CHECKPOINT.md)
+
+## U-AVF 1.0 record
+
 - [x] Build signed 1.0-rc.5/code13; preserve tested production payloads.
 - [x] Prepare bilingual notes and usage guide with limitations.
 - [x] Owner confirms original non-borrowed code/design ownership; scoped local license adopted.
